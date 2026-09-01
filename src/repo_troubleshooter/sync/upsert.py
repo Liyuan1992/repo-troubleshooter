@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-from typing import Any, TypeVar
+from typing import Any
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -28,12 +28,10 @@ from repo_troubleshooter.store.models import (
     SyncState,
 )
 
-_T = TypeVar("_T")
-
 NUL = chr(0)
 
 
-def _fetch(session: Session, model: type[_T], row_id: int) -> _T:
+def _fetch[T](session: Session, model: type[T], row_id: int) -> T:
     """Re-read a row we just wrote. A missing row here is a real bug, not a None."""
     row = session.get(model, row_id)
     if row is None:  # pragma: no cover - would mean the write vanished
