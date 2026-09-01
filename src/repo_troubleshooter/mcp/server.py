@@ -28,6 +28,7 @@ from repo_troubleshooter.config import get_settings
 from repo_troubleshooter.diagnosis.contract import DiagnosisRequest, PluginSpec
 from repo_troubleshooter.diagnosis.engine import diagnose as run_diagnosis
 from repo_troubleshooter.evidence.packet import resolve as resolve_evidence
+from repo_troubleshooter.relations.signatures import SignaturesStale
 from repo_troubleshooter.store import db
 from repo_troubleshooter.store.migrate import SchemaMismatch, require_schema
 from repo_troubleshooter.sync.upsert import get_repository
@@ -121,10 +122,17 @@ def diagnose(
         plugins=[PluginSpec.model_validate(item) for item in (plugins or [])],
         config_keys=list(config_keys or []),
     )
-    with db.session_scope() as session:
-        # persist=False: a query must not write. The CLI may cache a derived
-        # incident record; a read-only tool call may not.
-        response, _packet, _trace = run_diagnosis(request, session, persist=False)
+    try:
+        with db.session_scope() as session:
+            # persist=False: a query must not write. The CLI may cache a derived
+            # incident record; a read-only tool call may not.
+            response, _packet, _trace = run_diagnosis(request, session, persist=False)
+    except SignaturesStale as exc:
+        return _error(
+            "signatures_stale",
+            "the stored symptom signatures do not match this build's extractor",
+            str(exc),
+        )
     return {"ok": True, "result": response.to_json()}
 
 

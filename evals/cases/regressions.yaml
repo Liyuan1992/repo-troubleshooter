@@ -92,3 +92,29 @@ cases:
     error: >
       The web interface will not come up because the process cannot bind its port - something
       else on this machine is already listening there.
+
+  # --- adversarial: a foreign subject wearing the incident's vocabulary ----
+  - id: reg-foreign-package-shared-words
+    group: subject-conflict
+    note: >
+      An unrelated scoped package plus every common word the real incident uses.
+      Surface similarity is maximal; the subject still disagrees.
+    error: >
+      @acme/theme-kit fails on Windows: the client boot graph has zero entries and zero batches,
+      client-modules never preloads, and we see TypeError: e.indexOf is not a function during
+      startup of the web server.
+
+  - id: reg-foreign-package-shared-weak-module
+    group: subject-conflict
+    note: >
+      Both sides name `client-modules`. A weak module overlap must not buy off a
+      conflict between two scoped packages.
+    error: >
+      @acme/design-system client-modules integration: HTML did not preload the bundle, the boot
+      manifest is empty with no entries, and TypeError: e.indexOf is not a function is raised.
+
+  - id: reg-foreign-path-shared-symbols
+    group: subject-conflict
+    error: >
+      apps/reporting/src/formatter.ts throws TypeError: e.indexOf is not a function and the boot
+      graph ends up with no entries or batches on Windows.

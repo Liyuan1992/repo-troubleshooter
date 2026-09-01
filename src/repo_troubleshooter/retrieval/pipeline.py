@@ -32,7 +32,13 @@ from repo_troubleshooter.retrieval.identity import IdentityVerdict, evaluate
 MAX_CANDIDATES = 8
 MAX_IDENTITY_CHECKS = 6
 # Feature classes that may pull a candidate into stage 1 on their own.
-CANDIDATE_FEATURE_KINDS = ("subject", "error", "structural", "behavior")
+CANDIDATE_FEATURE_KINDS = (
+    "subject_strong",
+    "subject_weak",
+    "error",
+    "structural",
+    "behavior",
+)
 MIN_FEATURE_HITS = 2
 
 _FEATURE_SQL = """
@@ -131,7 +137,8 @@ def _feature_channel(
 ) -> dict[int, dict[str, list[str]]]:
     pairs: list[tuple[str, str]] = []
     for kind, values in (
-        ("subject", features.subject),
+        ("subject_strong", features.subject_strong),
+        ("subject_weak", features.subject_weak),
         ("error", features.error),
         ("structural", features.structural),
         ("behavior", features.behavior),
@@ -199,7 +206,9 @@ def retrieve(
 
     for object_id, hits in feature_hits.items():
         strong_hits = sum(
-            len(v) for k, v in hits.items() if k in ("subject", "error", "structural")
+            len(v)
+            for k, v in hits.items()
+            if k in ("subject_strong", "subject_weak", "error", "structural")
         )
         total_hits = sum(len(v) for v in hits.values())
         if object_id in merged:

@@ -48,6 +48,11 @@ from repo_troubleshooter.fingerprint.error import (
     PACKAGE_RE,
     normalize,
 )
+from repo_troubleshooter.fingerprint.subjects import (
+    identifying_path_tail,
+    morphology_proves_module,
+    syntax_proves_module,
+)
 
 # --- cause taxonomy ---------------------------------------------------------
 #
@@ -360,11 +365,20 @@ class SymptomFeatures:
     """One symptom, decomposed. Every set is lowercase and normalised."""
 
     error: set[str] = field(default_factory=set)
-    subject: set[str] = field(default_factory=set)
+    # Strong: packages and source paths. A conflict between two of these is
+    # decisive and cannot be offset by a weak subject that happens to overlap.
+    subject_strong: set[str] = field(default_factory=set)
+    # Weak: module names, admitted only with corpus/syntax/morphology proof.
+    subject_weak: set[str] = field(default_factory=set)
     structural: set[str] = field(default_factory=set)
     behavior: set[str] = field(default_factory=set)
     component: set[str] = field(default_factory=set)
     causes: set[str] = field(default_factory=set)
+
+    @property
+    def subject(self) -> set[str]:
+        """Every named subject, whatever its strength."""
+        return self.subject_strong | self.subject_weak
 
     @property
     def strong(self) -> set[str]:
@@ -379,7 +393,8 @@ class SymptomFeatures:
     def to_json(self) -> dict[str, Any]:
         return {
             "error": sorted(self.error),
-            "subject": sorted(self.subject),
+            "subject_strong": sorted(self.subject_strong),
+            "subject_weak": sorted(self.subject_weak),
             "structural": sorted(self.structural),
             "behavior": sorted(self.behavior),
             "component": sorted(self.component),
@@ -391,7 +406,8 @@ class SymptomFeatures:
         rows: list[tuple[str, str]] = []
         for kind, values in (
             ("error", self.error),
-            ("subject", self.subject),
+            ("subject_strong", self.subject_strong),
+            ("subject_weak", self.subject_weak),
             ("structural", self.structural),
             ("behavior", self.behavior),
             ("component", self.component),
@@ -432,65 +448,18 @@ def component_features(text: str) -> set[str]:
 
 
 # Directories every package has; a path tail led by one of these names nothing.
-GENERIC_PATH_DIRS = frozenset(
-    {
-        "src",
-        "lib",
-        "dist",
-        "build",
-        "out",
-        "bin",
-        "tests",
-        "test",
-        "spec",
-        "packages",
-        "apps",
-        "vendor",
-        "node_modules",
-        "internal",
-    }
-)
-
-
-def identifying_path_tail(path: str) -> str | None:
-    """`vendor/esm-shim/src/resolve.ts` -> `esm-shim/src/resolve.ts`; `src/x.ts` -> None."""
-    parts = [p for p in path.replace(chr(92), "/").split("/") if p]
-    if len(parts) < 2:
-        return None
-    if parts[-2] not in GENERIC_PATH_DIRS:
-        return "/".join(parts[-2:])
-    if len(parts) >= 3 and parts[-3] not in GENERIC_PATH_DIRS:
-        return "/".join(parts[-3:])
-    return None
-
-
-def subject_features(text: str) -> set[str]:
-    """The named things a report is about: packages, module ids, source paths.
-
-    Deliberately narrow. A subject has to be something a maintainer could
-    point at in the tree, because subject disagreement is decisive and a
-    loose definition would make it fire on coincidences.
-    """
+def strong_subjects(text: str) -> set[str]:
+    """Packages and source paths: things that exist at a location in the tree."""
     subjects: set[str] = set()
-    lowered = text.lower()
 
-    # scoped packages and node builtins: @deepseek-ai/dsh-client-modules, node:path
     for match in PACKAGE_RE.finditer(text):
         value = (match.group(1) or match.group(0)).lower()
         subjects.add(value)
-        # the package name itself, without the file inside it
         if value.startswith("@") and value.count("/") >= 1:
             scope, _, rest = value.partition("/")
             subjects.add(f"{scope}/{rest.split('/')[0]}")
 
-    # module ids written with hyphens: theme-parser, client-modules, agent-presets
-    for match in HYPHEN_MODULE_RE.finditer(lowered):
-        token = match.group(1)
-        if len(token) >= 8 and token not in COMPONENT_HINTS:
-            subjects.add(token)
-
-    # source paths, but only where a real directory names the place
-    for path in iter_source_paths(lowered):
+    for path in iter_source_paths(text.lower()):
         tail = identifying_path_tail(path)
         if tail:
             subjects.add(tail)
@@ -498,7 +467,28 @@ def subject_features(text: str) -> set[str]:
     return subjects
 
 
-def extract(text: str | None) -> SymptomFeatures:
+def weak_subjects(text: str, known_modules: frozenset[str] = frozenset()) -> set[str]:
+    """Module names, admitted only with corpus, syntax or morphology evidence.
+
+    A bare hyphenated phrase is not a subject. `customer-facing` and
+    `time-sensitive` reach none of these three proofs and stay out.
+    """
+    subjects: set[str] = set()
+    lowered = text.lower()
+    for match in HYPHEN_MODULE_RE.finditer(lowered):
+        token = match.group(1)
+        if len(token) < 6 or token in COMPONENT_HINTS:
+            continue
+        if (
+            token in known_modules
+            or syntax_proves_module(token, text)
+            or morphology_proves_module(token)
+        ):
+            subjects.add(token)
+    return subjects
+
+
+def extract(text: str | None, *, known_modules: frozenset[str] = frozenset()) -> SymptomFeatures:
     """Decompose one piece of symptom text into its feature classes."""
     if not text or not text.strip():
         return SymptomFeatures()
@@ -508,7 +498,8 @@ def extract(text: str | None) -> SymptomFeatures:
     error = {m.lower() for m in EXCEPTION_RE.findall(signature)}
     error |= {m.lower() for m in ERROR_CODE_RE.findall(signature)}
 
-    subject = subject_features(signature)
+    subject_strong = strong_subjects(signature)
+    subject_weak = weak_subjects(signature, known_modules) - subject_strong
 
     structural: set[str] = set()
     structural |= {m.lower() for m in DUNDER_RE.findall(signature)}
@@ -516,11 +507,12 @@ def extract(text: str | None) -> SymptomFeatures:
     structural |= {m.lower() for m in CAMEL_RE.findall(signature) if len(m) >= 6}
     structural -= error
     # A symbol is not a subject: `e.indexOf` belongs to whoever called it.
-    structural -= subject
+    structural -= subject_strong | subject_weak
 
     return SymptomFeatures(
         error=error,
-        subject=subject,
+        subject_strong=subject_strong,
+        subject_weak=subject_weak,
         structural=structural,
         behavior=behavioral_features(signature),
         component=component_features(signature),
@@ -532,7 +524,8 @@ def merge(*feature_sets: SymptomFeatures) -> SymptomFeatures:
     merged = SymptomFeatures()
     for features in feature_sets:
         merged.error |= features.error
-        merged.subject |= features.subject
+        merged.subject_strong |= features.subject_strong
+        merged.subject_weak |= features.subject_weak
         merged.structural |= features.structural
         merged.behavior |= features.behavior
         merged.component |= features.component

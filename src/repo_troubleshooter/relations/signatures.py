@@ -15,13 +15,23 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from repo_troubleshooter.fingerprint import features as feat
 from repo_troubleshooter.fingerprint.features import SymptomFeatures
-from repo_troubleshooter.store.models import ContentUnit, Repository, SourceObject, SymptomSignature
+from repo_troubleshooter.fingerprint.subjects import (
+    FEATURE_EXTRACTOR_VERSION,
+    module_names_from_subjects,
+)
+from repo_troubleshooter.store.models import (
+    ContentUnit,
+    Repository,
+    SourceObject,
+    SymptomSignature,
+    SyncState,
+)
 
 # Objects that can carry a symptom. Docs describe intent, not failures.
 SIGNATURE_KINDS = ("discussion", "issue", "release")
@@ -33,12 +43,14 @@ class SignatureStats:
     objects: int = 0
     rows_written: int = 0
     skipped_empty: int = 0
+    extractor_version: int = FEATURE_EXTRACTOR_VERSION
 
     def to_json(self) -> dict[str, Any]:
         return {
             "objects": self.objects,
             "rows_written": self.rows_written,
             "skipped_empty": self.skipped_empty,
+            "extractor_version": self.extractor_version,
         }
 
 
@@ -57,9 +69,22 @@ def object_text(session: Session, object_id: int, *, include_children: bool = Tr
     return "\n".join(rows)[:MAX_TEXT_CHARS]
 
 
-def features_for_object(session: Session, obj: SourceObject) -> SymptomFeatures:
+def features_for_object(
+    session: Session, obj: SourceObject, known_modules: frozenset[str] = frozenset()
+) -> SymptomFeatures:
     title = obj.title or ""
-    return feat.extract(f"{title}\n{object_text(session, obj.id)}")
+    return feat.extract(f"{title}\n{object_text(session, obj.id)}", known_modules=known_modules)
+
+
+def known_modules(session: Session, repo_id: int) -> frozenset[str]:
+    """Module names this repository's own strong subjects vouch for."""
+    rows = session.scalars(
+        select(SymptomSignature.feature_value).where(
+            SymptomSignature.repo_id == repo_id,
+            SymptomSignature.feature_kind == "subject_strong",
+        )
+    ).all()
+    return frozenset(module_names_from_subjects(set(rows)))
 
 
 def store_features(
@@ -110,6 +135,7 @@ def build_for_repository(
     if limit:
         query = query.limit(limit)
 
+    # Pass 1: mine what each thread proves on its own.
     for obj in session.scalars(query):
         features = features_for_object(session, obj)
         if features.is_empty():
@@ -123,9 +149,45 @@ def build_for_repository(
             progress(f"signatures: {stats.objects} objects mined")
         if stats.objects % 200 == 0:
             session.commit()
+    session.commit()
 
+    # Pass 2: now that the corpus knows which module names are real, re-mine so
+    # a thread that mentions `web-search-deepseek` in prose gets it as a subject.
+    corpus = known_modules(session, repo.id)
+    if corpus:
+        rescanned = 0
+        for obj in session.scalars(query):
+            features = features_for_object(session, obj, corpus)
+            if features.is_empty():
+                continue
+            stats.rows_written += store_features(
+                session, repo_id=repo.id, object_id=obj.id, features=features
+            )
+            rescanned += 1
+            if rescanned % 200 == 0:
+                session.commit()
+        session.commit()
+        if progress:
+            progress(f"signatures: corpus pass over {rescanned} objects")
+
+    _record_extractor_version(session, repo)
     session.commit()
     return stats
+
+
+def _record_extractor_version(session: Session, repo: Repository) -> None:
+    """Stamp the mined rows with the extractor that produced them."""
+    state = session.scalar(
+        select(SyncState).where(SyncState.repo_id == repo.id, SyncState.source == "signatures")
+    )
+    if state is None:
+        state = SyncState(repo_id=repo.id, source="signatures", status="complete", stats={})
+        session.add(state)
+        session.flush()
+    stats = dict(state.stats or {})
+    stats["extractor_version"] = FEATURE_EXTRACTOR_VERSION
+    state.stats = stats
+    session.flush()
 
 
 def load_features(session: Session, object_id: int) -> SymptomFeatures:
@@ -137,8 +199,10 @@ def load_features(session: Session, object_id: int) -> SymptomFeatures:
         )
     ).all()
     for kind, value in rows:
-        if kind == "subject":
-            features.subject.add(value)
+        if kind == "subject_strong":
+            features.subject_strong.add(value)
+        elif kind == "subject_weak":
+            features.subject_weak.add(value)
         elif kind == "error":
             features.error.add(value)
         elif kind == "structural":
@@ -168,3 +232,61 @@ def document_frequencies(session: Session, repo_id: int, values: set[str]) -> di
     for value, _object_id in rows:
         counts[value] = counts.get(value, 0) + 1
     return counts
+
+
+class SignaturesStale(RuntimeError):
+    """The mined signatures cannot be trusted for diagnosis."""
+
+
+@dataclass
+class SignatureState:
+    """Whether this repository's mined signatures match the current extractor."""
+
+    rows: int
+    stored_version: int | None
+    current_version: int = FEATURE_EXTRACTOR_VERSION
+
+    @property
+    def ok(self) -> bool:
+        return self.rows > 0 and self.stored_version == self.current_version
+
+    def remediation(self, repo_full_name: str) -> str:
+        if self.rows == 0:
+            return (
+                "no symptom signatures are stored for "
+                f"{repo_full_name}; diagnosis would be blind to paraphrases.\n"
+                f"  build them with:  repo-troubleshooter signatures {repo_full_name}"
+            )
+        return (
+            f"symptom signatures for {repo_full_name} were mined by extractor "
+            f"version {self.stored_version}, but this build is version "
+            f"{self.current_version}; stored features no longer mean the same "
+            "thing as query features.\n"
+            f"  rebuild them with:  repo-troubleshooter signatures {repo_full_name} --rebuild"
+        )
+
+
+def signature_state(session: Session, repo: Repository) -> SignatureState:
+    rows = (
+        session.scalar(
+            select(func.count())
+            .select_from(SymptomSignature)
+            .where(SymptomSignature.repo_id == repo.id)
+        )
+        or 0
+    )
+    state = session.scalar(
+        select(SyncState).where(SyncState.repo_id == repo.id, SyncState.source == "signatures")
+    )
+    stored = (state.stats or {}).get("extractor_version") if state else None
+    return SignatureState(
+        rows=rows, stored_version=int(stored) if isinstance(stored, int) else None
+    )
+
+
+def require_fresh_signatures(session: Session, repo: Repository) -> SignatureState:
+    """Raise unless the stored signatures were mined by this exact extractor."""
+    state = signature_state(session, repo)
+    if not state.ok:
+        raise SignaturesStale(state.remediation(repo.full_name))
+    return state

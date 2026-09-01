@@ -38,6 +38,7 @@ from repo_troubleshooter.evidence.packet import EvidencePacket
 from repo_troubleshooter.fingerprint import features as feat
 from repo_troubleshooter.fingerprint.error import ErrorFingerprint, fingerprint
 from repo_troubleshooter.relations.change_resolution import ChangeCandidate, resolve_change
+from repo_troubleshooter.relations.signatures import require_fresh_signatures
 from repo_troubleshooter.retrieval import pipeline
 from repo_troubleshooter.store.models import (
     ContentUnit,
@@ -224,6 +225,11 @@ def diagnose(
     data_as_of, sync_health, coverage_notes = _sync_snapshot(session, repo)
     environment = request.environment_json()
     runtime_name, runtime_version = request.runtime_name_version()
+
+    # Stored features and query features must come from the same extractor,
+    # or every comparison below is meaningless. This raises rather than
+    # degrading: a wrong answer is worse than a refusal to answer.
+    require_fresh_signatures(session, repo)
 
     fp = fingerprint(request.error, extra_context=request.question)
     query_features = feat.extract(chr(10).join(p for p in (request.error, request.question) if p))

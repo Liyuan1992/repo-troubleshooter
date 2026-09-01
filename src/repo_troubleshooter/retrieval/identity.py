@@ -97,12 +97,14 @@ def evaluate(
     doc_freq = doc_freq or {}
 
     shared_subject = query.subject & candidate.subject
+    shared_strong_subject = query.subject_strong & candidate.subject_strong
     shared_error = query.error & candidate.error
     shared_struct = query.structural & candidate.structural
     shared_behavior = query.behavior & candidate.behavior
     shared_component = query.component & candidate.component
     shared = {
         "subject": sorted(shared_subject),
+        "subject_strong": sorted(shared_strong_subject),
         "error": sorted(shared_error),
         "structural": sorted(shared_struct),
         "behavior": sorted(shared_behavior),
@@ -130,12 +132,29 @@ def evaluate(
         + _weighted(shared_component, CLASS_WEIGHTS["component"], doc_freq, corpus_objects)
     )
 
-    # --- rule 3: when both sides name subjects and none overlap ---
-    # Decisive, and deliberately not overridable. A shared symbol, exception type
+    # --- rule 3: subject disagreement, strongest evidence first ---
+    # Decisive and deliberately not overridable. A shared symbol, exception type
     # or stack frame says how something broke, never *what* broke: `e.indexOf`
-    # and `TypeError` belong to every caller. If one report is about
-    # `theme-parser` and the other about `@deepseek-ai/dsh-client-modules`, they
-    # are different incidents however much vocabulary they share.
+    # and `TypeError` belong to every caller.
+    #
+    # Strong subjects (packages, source paths) are checked before anything else,
+    # and a weak overlap cannot buy off their conflict: two reports about
+    # different packages are about different packages even if both mention the
+    # same module name in passing.
+    if query.subject_strong and candidate.subject_strong and not shared_strong_subject:
+        return IdentityVerdict(
+            accepted=False,
+            score=score,
+            rejection="different_subject",
+            shared=shared,
+            reasons=[
+                "the reports name different packages or source paths "
+                f"(this report: {sorted(query.subject_strong)[:3]}; "
+                f"candidate: {sorted(candidate.subject_strong)[:3]}); "
+                "a shared module name, symbol or error type does not override that"
+            ],
+        )
+
     if query.subject and candidate.subject and not shared_subject:
         return IdentityVerdict(
             accepted=False,
@@ -152,7 +171,9 @@ def evaluate(
 
     # --- rule 1: which combination of classes is enough to mean "same" ---
     rule: str | None = None
-    if shared_subject and (shared_error or shared_struct or len(shared_behavior) >= 2):
+    if shared_strong_subject and (shared_error or shared_struct or shared_behavior):
+        rule = "strong_subject_plus_second_class"
+    elif shared_subject and (shared_error or shared_struct or len(shared_behavior) >= 2):
         rule = "subject_plus_second_class"
     elif shared_error and (shared_struct or shared_behavior):
         rule = "error_type_plus_second_class"

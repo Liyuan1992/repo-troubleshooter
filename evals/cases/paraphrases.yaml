@@ -79,3 +79,20 @@ cases:
     expect:
       no_incident_match: true
       forbid_actions: [upgrade, downgrade, migrate, config_change, workaround]
+
+  - id: para-modifier-invariance
+    target_discussion: 5084
+    note: >
+      The correct report padded with business adjectives. `customer-facing` and
+      `time-sensitive` are descriptions, not subjects, so the incident decision
+      must be identical to the unpadded case.
+    error: >
+      This is a customer-facing, time-sensitive, release-blocking regression for a
+      business-critical deployment. dsh web starts but __DSH_BOOT__ has zero entries and zero
+      batches; client-modules reports HTML did not preload
+      @deepseek-ai/dsh-client-modules/client.js, and the host throws TypeError: e.indexOf is
+      not a function.
+    expect:
+      matched_discussion: 5084
+      action: upgrade
+      target: dsh-v0.1.2-alpha.2

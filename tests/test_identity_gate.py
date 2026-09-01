@@ -140,9 +140,10 @@ class TestParaphraseIsIdentity:
         )
         verdict = evaluate(query, features(LOADER_THREAD))
         assert verdict.accepted
-        # With subjects as their own class, an exact paste now matches on the
-        # subject first - a stronger reason than the symbol overlap it used to use.
+        # With subjects typed, an exact paste matches on the package it names -
+        # a stronger reason than the symbol overlap it used to rely on.
         assert verdict.rule in (
+            "strong_subject_plus_second_class",
             "subject_plus_second_class",
             "error_type_plus_second_class",
             "two_independent_symbols",

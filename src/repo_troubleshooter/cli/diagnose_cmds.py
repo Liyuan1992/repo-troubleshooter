@@ -163,8 +163,13 @@ def register(
             config_keys=list(config_key or []),
         )
 
-        with db.session_scope() as session:
-            response, _packet, trace = run_diagnosis(request, session)
+        from repo_troubleshooter.relations.signatures import SignaturesStale
+
+        try:
+            with db.session_scope() as session:
+                response, _packet, trace = run_diagnosis(request, session)
+        except SignaturesStale as exc:
+            fail("symptom signatures are stale or missing\n" + str(exc))
 
         if as_json:
             payload = response.to_json()

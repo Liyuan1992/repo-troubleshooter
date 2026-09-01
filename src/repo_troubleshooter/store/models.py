@@ -445,7 +445,7 @@ class SymptomSignature(Base):
     object_id: Mapped[int] = mapped_column(
         ForeignKey("source_object.id", ondelete="CASCADE"), nullable=False
     )
-    # subject | error | structural | behavior | component | cause
+    # subject_strong | subject_weak | error | structural | behavior | component | cause
     feature_kind: Mapped[str] = mapped_column(String(16), nullable=False)
     feature_value: Mapped[str] = mapped_column(String(300), nullable=False)
     # Which source text produced it: the thread body, a comment, a release note.
@@ -457,7 +457,8 @@ class SymptomSignature(Base):
         Index("ix_symptom_signature_lookup", "repo_id", "feature_kind", "feature_value"),
         Index("ix_symptom_signature_object", "object_id"),
         CheckConstraint(
-            "feature_kind IN ('subject','error','structural','behavior','component','cause')",
+            "feature_kind IN ('subject_strong','subject_weak','error','structural',"
+            "'behavior','component','cause')",
             name="ck_symptom_signature_kind",
         ),
     )

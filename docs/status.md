@@ -47,23 +47,31 @@ decide, all measured:
   disk, port, TLS, permission, OOM, module-resolution or version-conflict, a
   candidate that does not exhibit that mechanism is a different incident
   (`different_root_cause`);
-* **subjects must not disagree** - `subject` is its own feature class (packages,
-  module ids, source paths with an identifying directory), kept apart from
-  symbols. When both sides name subjects and none overlap the match is refused
-  (`different_subject`), and that refusal is **not overridable**: a shared
-  function name, exception type or stack frame says how something broke, never
-  what broke;
+* **subjects must not disagree** - subjects are typed and graded. *Strong*
+  subjects are scoped packages and source paths carrying an identifying
+  directory; *weak* subjects are module names admitted only with corpus, syntax
+  or morphology evidence (`theme-parser` yes, `customer-facing` no - a hyphen is
+  not evidence). A **strong** conflict is checked first and is decisive: two
+  reports about different packages stay different even when a weak module name
+  overlaps, and a shared function name, exception type or stack frame never
+  overrides it, because those say how something broke and not what broke;
 * **environment can only veto** - runtime/OS never contributes to identity.
 
 **Verification evidence.** Committed suite: 35 negative and regression cases,
 0 false incidents, 0 unsafe actions. The three reported leaks (CSP blocking
 `client.js`, `cordis.yml` duplicate key, npm DNS failure) are rejected as
 `different_root_cause` and asserted in `tests/test_identity_gate.py`.
-`evals/cases/regressions.yaml` adds 10 **developer-authored** wordings - seven
+`evals/cases/regressions.yaml` adds 13 **developer-authored** wordings - seven
 subject-conflict cases where a different module hits the same `e.indexOf` symbol
-and the same `TypeError`, plus three wordings that previously leaked a candidate.
-All 10 require `matched=false` and forbid upgrade/downgrade/migrate/
-config_change/workaround.
+and the same `TypeError`, three adversarial cases that pair a foreign scoped
+package or path with the incident's own vocabulary (including one where both
+sides name `client-modules`), and three wordings that previously leaked a
+candidate. All 13 require `matched=false` and forbid upgrade/downgrade/migrate/
+config_change/workaround. `tests/test_subject_strength.py` pins the same
+properties at the unit level, including **modifier invariance**: padding a
+correct report with `customer-facing`, `time-sensitive`, `release-blocking` and
+similar adjectives must not change the verdict, the rule, or the shared strong
+subjects - and must not rescue an unrelated report either.
 
 These regression wordings were written by the same developer who wrote the code,
 so they prove the defects are closed - **not** that the system generalises. No
@@ -110,12 +118,13 @@ for false matches.
 
 ## 4. Measured results
 
-**Current fact.** Committed suite: 65 cases - 10 incidents across 10 subsystems,
-5 paraphrases, 25 negatives, 10 developer-authored regressions, 15 perturbations.
-**64 pass, 1 is a documented recall gap** (`para-boot-graph-user-voice`).
+**Current fact.** Committed suite: 69 cases - 10 incidents across 10 subsystems,
+6 paraphrases, 25 negatives, 13 developer-authored regressions, 15 perturbations.
+**68 pass, 1 is a documented recall gap** (`para-boot-graph-user-voice`).
 
-The previous iteration of this suite was 55 cases and stood at **54/55** with the
-same single gap; the 10 regression cases were added after it.
+History of this denominator, so the number is not read as growth in quality:
+**54/55** before the regression cases, **64/65** after the first 10, **68/69**
+now that three adversarial cases and one modifier-invariance case were added.
 
 **Correct Action@1 exclusion rule:** the documented gap is excluded from the
 denominator (n=29, not 30). It is not counted as a pass and not counted as a
@@ -124,25 +133,25 @@ excluded.
 
 | Metric | Value | n |
 |---|---|---|
-| Correct Action@1 | 1.00 | 29 (gap excluded) |
-| negative false-incident rate | 0.00 | 35 |
-| unsafe action rate (negatives + regressions) | 0.00 | 35 |
+| Correct Action@1 | 1.00 | 30 (gap excluded) |
+| negative false-incident rate | 0.00 | 38 |
+| unsafe action rate (negatives + regressions) | 0.00 | 38 |
 | unsafe action rate (environment contradictions) | 0.00 | 2 |
 | version/release verdict accuracy | 1.00 | 15 |
-| citation validity | 1.00 | 78 ids |
-| claim-support validity (structural) | 1.00 | 65 |
-| abstention recall | 1.00 | 35 |
-| **abstention precision** | **0.66** | 53 |
+| citation validity | 1.00 | 81 ids |
+| claim-support validity (structural) | 1.00 | 69 |
+| abstention recall | 1.00 | 38 |
+| **abstention precision** | **0.68** | 56 |
 | documented recall gaps | 1 | - |
 | future-leakage violations | 0 | - |
-| latency p50 / p95 / max | 55 ms / 813 ms / 864 ms | 65 |
+| latency p50 / p95 / max | 57 ms / 793 ms / 870 ms | 69 |
 
 **Verification evidence.** `python evals/runner.py` writes
 `evals/reports/latest.json`; the hard gates are re-asserted in
 `tests/test_eval_suite.py::TestHardGates`.
 
-**Remaining target.** Abstention precision is the weakest number here: 0.66 now,
-0.58 on the previous 55-case suite. It is honest but crude - it counts every
+**Remaining target.** Abstention precision is the weakest number here: 0.68 now,
+0.66 on the 65-case suite, 0.58 on the 55-case one. It is honest but crude - it counts every
 `collect_more_info` as an abstention, including the *correct* "your version
 already contains this change" answers, which are informative results rather than
 refusals. A better denominator, and B1-B6 baselines, are still to build. Claim-support validity is **structural only** - every claim
@@ -155,7 +164,7 @@ sentence.
 
 ## 5. Engineering contracts
 
-**Current fact.** `mypy --strict` over `src` is clean (48 files, 0 errors) with no
+**Current fact.** `mypy --strict` over `src` is clean (49 files, 0 errors) with no
 blanket `ignore_errors` and no unexplained `type: ignore`; the only overrides are
 `ignore_missing_imports` for third-party packages that ship no stubs (`mcp`,
 `alembic`, `pgvector`). An MCP server (`repo-troubleshooter-mcp`) exposes exactly
@@ -167,7 +176,10 @@ database that is down, empty, foreign or stale fails within ~3 seconds with a
 command to run, never a traceback; MCP returns a structured error instead of
 hanging.
 
-**Verification evidence.** `uv run mypy src` → success. `tests/test_mcp_roundtrip.py`
+**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **146
+passed** (118 before this round; the 125 quoted in review predates the
+subject-strength and signature-freshness tests added here).
+`tests/test_mcp_roundtrip.py`
 drives a real MCP SDK client: lists tools, calls both, asserts CLI/MCP parity on
 status, action, target, `incident.matched`, `stages.stopped_at` and the
 evidence-id set, checks the read-only annotations over the wire, and counts all
@@ -226,6 +238,36 @@ tests, fresh migration, database tests, packaging + MCP smoke) is committed but
 has never executed anywhere.
 
 ---
+
+---
+
+## 8. Signature freshness
+
+**Current fact.** Feature extraction is versioned (`FEATURE_EXTRACTOR_VERSION`).
+The version is stamped on the mined rows, and `require_fresh_signatures` runs
+before every diagnosis: if the stored signatures were mined by a different
+extractor, or none exist, the engine **raises instead of answering**. Stored
+candidate features and live query features have to come from the same extractor
+or every comparison between them is meaningless, and a confident wrong answer is
+worse than a refusal.
+
+The migration that introduced typed subjects deletes every mined row and clears
+the recorded version, so an upgraded database is *forced* through a rebuild
+rather than silently diagnosing against stale features.
+
+**Verification evidence.** After `db init` on the existing database, `diagnose`
+refused with `no symptom signatures are stored ... build them with:
+repo-troubleshooter signatures <repo>` and exited non-zero; after
+`rt signatures <repo> --rebuild` (500 objects, 32,882 rows, extractor_version 3)
+it answered again. `tests/test_signature_freshness.py` rewinds the stored version
+and asserts the refusal on all three paths - engine (raises), CLI (non-zero exit,
+no traceback, `--rebuild` in the message) and MCP (`signatures_stale` structured
+error) - then restores it.
+
+**Remaining target.** The rebuild is manual. A sync that notices a version
+mismatch could rebuild automatically.
+
+**Blockers.** None.
 
 ## Not built
 
