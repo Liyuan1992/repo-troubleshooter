@@ -6,8 +6,15 @@ gate later requires agreement across several of them:
 
 ``error``
     Exception types and error codes. Strong identity.
+``subject``
+    *What the report is about*: a package (`@scope/name`), a module id
+    (`theme-parser`), a source path. Two reports naming different subjects
+    are about different things, and no amount of shared vocabulary changes
+    that - which is why subjects are kept apart from the symbols below.
 ``structural``
-    Symbols, packages, dotted calls, source paths, ``__GLOBALS__``. Strong.
+    Symbols: `__GLOBALS__`, dotted calls, camelCase identifiers, bare
+    filenames. Strong evidence, but a symbol is shared by everything that
+    calls it: `e.indexOf` says nothing about which package failed.
 ``behavior``
     What the software actually did, normalised from prose: something was empty,
     absent, or never happened. This is what survives paraphrasing - a user who
@@ -293,6 +300,33 @@ def _stem(word: str) -> str:
     return lowered
 
 
+# Path-ish tokens are found by splitting, not by a nested-quantifier regex:
+# `[\w.@-]+(?:[/\][\w.@-]+)+\.ext` backtracks catastrophically on long logs.
+_TOKEN_SPLIT_RE = re.compile(r"[\s,;:()\[\]{}<>\"'`]+")
+SOURCE_SUFFIXES = (
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+    ".py",
+    ".rs",
+    ".go",
+    ".java",
+)
+
+
+def iter_source_paths(text: str) -> list[str]:
+    """Tokens that look like a source path with at least one directory."""
+    found: list[str] = []
+    for token in _TOKEN_SPLIT_RE.split(text):
+        cleaned = token.strip("'\"`.,;")
+        if ("/" in cleaned or chr(92) in cleaned) and cleaned.lower().endswith(SOURCE_SUFFIXES):
+            found.append(cleaned)
+    return found
+
+
 COMPONENT_HINTS = (
     "loader",
     "client",
@@ -326,6 +360,7 @@ class SymptomFeatures:
     """One symptom, decomposed. Every set is lowercase and normalised."""
 
     error: set[str] = field(default_factory=set)
+    subject: set[str] = field(default_factory=set)
     structural: set[str] = field(default_factory=set)
     behavior: set[str] = field(default_factory=set)
     component: set[str] = field(default_factory=set)
@@ -334,14 +369,17 @@ class SymptomFeatures:
     @property
     def strong(self) -> set[str]:
         """Feature values that can carry identity on their own."""
-        return self.error | self.structural
+        return self.error | self.structural | self.subject
 
     def is_empty(self) -> bool:
-        return not (self.error or self.structural or self.behavior or self.component)
+        return not (
+            self.error or self.subject or self.structural or self.behavior or self.component
+        )
 
     def to_json(self) -> dict[str, Any]:
         return {
             "error": sorted(self.error),
+            "subject": sorted(self.subject),
             "structural": sorted(self.structural),
             "behavior": sorted(self.behavior),
             "component": sorted(self.component),
@@ -353,6 +391,7 @@ class SymptomFeatures:
         rows: list[tuple[str, str]] = []
         for kind, values in (
             ("error", self.error),
+            ("subject", self.subject),
             ("structural", self.structural),
             ("behavior", self.behavior),
             ("component", self.component),
@@ -387,14 +426,76 @@ def behavioral_features(text: str) -> set[str]:
 
 
 def component_features(text: str) -> set[str]:
+    """Generic areas of the system. Weak on their own - everyone has a client."""
     lowered = text.lower()
-    found = {hint for hint in COMPONENT_HINTS if re.search(rf"\b{hint}s?\b", lowered)}
-    # Hyphenated module names are components too: client-modules, agent-presets.
+    return {hint for hint in COMPONENT_HINTS if re.search(rf"\b{hint}s?\b", lowered)}
+
+
+# Directories every package has; a path tail led by one of these names nothing.
+GENERIC_PATH_DIRS = frozenset(
+    {
+        "src",
+        "lib",
+        "dist",
+        "build",
+        "out",
+        "bin",
+        "tests",
+        "test",
+        "spec",
+        "packages",
+        "apps",
+        "vendor",
+        "node_modules",
+        "internal",
+    }
+)
+
+
+def identifying_path_tail(path: str) -> str | None:
+    """`vendor/esm-shim/src/resolve.ts` -> `esm-shim/src/resolve.ts`; `src/x.ts` -> None."""
+    parts = [p for p in path.replace(chr(92), "/").split("/") if p]
+    if len(parts) < 2:
+        return None
+    if parts[-2] not in GENERIC_PATH_DIRS:
+        return "/".join(parts[-2:])
+    if len(parts) >= 3 and parts[-3] not in GENERIC_PATH_DIRS:
+        return "/".join(parts[-3:])
+    return None
+
+
+def subject_features(text: str) -> set[str]:
+    """The named things a report is about: packages, module ids, source paths.
+
+    Deliberately narrow. A subject has to be something a maintainer could
+    point at in the tree, because subject disagreement is decisive and a
+    loose definition would make it fire on coincidences.
+    """
+    subjects: set[str] = set()
+    lowered = text.lower()
+
+    # scoped packages and node builtins: @deepseek-ai/dsh-client-modules, node:path
+    for match in PACKAGE_RE.finditer(text):
+        value = (match.group(1) or match.group(0)).lower()
+        subjects.add(value)
+        # the package name itself, without the file inside it
+        if value.startswith("@") and value.count("/") >= 1:
+            scope, _, rest = value.partition("/")
+            subjects.add(f"{scope}/{rest.split('/')[0]}")
+
+    # module ids written with hyphens: theme-parser, client-modules, agent-presets
     for match in HYPHEN_MODULE_RE.finditer(lowered):
         token = match.group(1)
-        if len(token) >= 8:
-            found.add(token)
-    return found
+        if len(token) >= 8 and token not in COMPONENT_HINTS:
+            subjects.add(token)
+
+    # source paths, but only where a real directory names the place
+    for path in iter_source_paths(lowered):
+        tail = identifying_path_tail(path)
+        if tail:
+            subjects.add(tail)
+
+    return subjects
 
 
 def extract(text: str | None) -> SymptomFeatures:
@@ -407,17 +508,19 @@ def extract(text: str | None) -> SymptomFeatures:
     error = {m.lower() for m in EXCEPTION_RE.findall(signature)}
     error |= {m.lower() for m in ERROR_CODE_RE.findall(signature)}
 
+    subject = subject_features(signature)
+
     structural: set[str] = set()
     structural |= {m.lower() for m in DUNDER_RE.findall(signature)}
-    structural |= {
-        (m[0] if isinstance(m, tuple) else m).lower() for m in PACKAGE_RE.findall(signature)
-    }
     structural |= {m.lower() for m in DOTTED_RE.findall(signature) if "." in m}
     structural |= {m.lower() for m in CAMEL_RE.findall(signature) if len(m) >= 6}
     structural -= error
+    # A symbol is not a subject: `e.indexOf` belongs to whoever called it.
+    structural -= subject
 
     return SymptomFeatures(
         error=error,
+        subject=subject,
         structural=structural,
         behavior=behavioral_features(signature),
         component=component_features(signature),
@@ -429,6 +532,7 @@ def merge(*feature_sets: SymptomFeatures) -> SymptomFeatures:
     merged = SymptomFeatures()
     for features in feature_sets:
         merged.error |= features.error
+        merged.subject |= features.subject
         merged.structural |= features.structural
         merged.behavior |= features.behavior
         merged.component |= features.component

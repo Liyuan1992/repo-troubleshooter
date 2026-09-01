@@ -32,7 +32,7 @@ from repo_troubleshooter.retrieval.identity import IdentityVerdict, evaluate
 MAX_CANDIDATES = 8
 MAX_IDENTITY_CHECKS = 6
 # Feature classes that may pull a candidate into stage 1 on their own.
-CANDIDATE_FEATURE_KINDS = ("error", "structural", "behavior")
+CANDIDATE_FEATURE_KINDS = ("subject", "error", "structural", "behavior")
 MIN_FEATURE_HITS = 2
 
 _FEATURE_SQL = """
@@ -131,6 +131,7 @@ def _feature_channel(
 ) -> dict[int, dict[str, list[str]]]:
     pairs: list[tuple[str, str]] = []
     for kind, values in (
+        ("subject", features.subject),
         ("error", features.error),
         ("structural", features.structural),
         ("behavior", features.behavior),
@@ -197,7 +198,9 @@ def retrieve(
             meta[meta_row[0]] = meta_row
 
     for object_id, hits in feature_hits.items():
-        strong_hits = sum(len(v) for k, v in hits.items() if k in ("error", "structural"))
+        strong_hits = sum(
+            len(v) for k, v in hits.items() if k in ("subject", "error", "structural")
+        )
         total_hits = sum(len(v) for v in hits.values())
         if object_id in merged:
             merged[object_id].channels.append("signatures")
@@ -244,7 +247,8 @@ def identify(
 ) -> RetrievalOutcome:
     """Stage 2: decide which candidate, if any, is the *same incident*."""
     query_values = (
-        query_features.error
+        query_features.subject
+        | query_features.error
         | query_features.structural
         | query_features.behavior
         | query_features.component

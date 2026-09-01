@@ -1,0 +1,94 @@
+# Developer-authored regression wordings.
+#
+# NOT an independent holdout: these were written by the same developer who wrote
+# the code, so passing them proves the defect is closed, not that the system
+# generalises. Independent hidden evaluation is run separately by the evaluator.
+#
+# Two groups:
+#
+# * subject conflict - a different package or module hitting the *same* symbol
+#   and the same exception type as a real incident. A shared `e.indexOf` or
+#   `TypeError` says how something broke, never what broke, so these must not
+#   match and must never produce an action that changes what the user runs.
+# * previously leaking wordings - rewrites of unrelated failures that earlier
+#   surfaced a candidate as a matched incident.
+version: 1
+repo: deepseek-ai/deepseek-harness
+
+defaults:
+  core_version: 0.1.2-alpha.1
+  runtime: node 24.11.1
+  os: windows
+
+expect_all:
+  no_incident_match: true
+  forbid_actions: [upgrade, downgrade, migrate, config_change, workaround]
+  no_unsupported_claims: true
+
+cases:
+  # --- subject conflict: same symbol, same exception, different subject ----
+  - id: reg-theme-parser-indexof
+    group: subject-conflict
+    note: >
+      The canonical case. Same `TypeError: e.indexOf is not a function` as the
+      loader incident, in a different module.
+    error: >
+      theme-parser crashes during startup on Windows: TypeError: e.indexOf is not a function
+      while reading the palette file, and the UI never renders.
+
+  - id: reg-markdown-renderer-indexof
+    group: subject-conflict
+    error: >
+      markdown-renderer throws TypeError: e.indexOf is not a function when rendering a fenced
+      code block, so the message body stays blank.
+
+  - id: reg-session-exporter-indexof
+    group: subject-conflict
+    error: >
+      session-exporter fails with TypeError: e.indexOf is not a function during export; nothing
+      is written and no entries appear in the output.
+
+  - id: reg-external-package-indexof
+    group: subject-conflict
+    error: >
+      @acme/telemetry-agent raises TypeError: e.indexOf is not a function on boot, so telemetry
+      never starts and no batches are sent.
+
+  - id: reg-unrelated-path-indexof
+    group: subject-conflict
+    error: >
+      apps/reporting/src/formatter.ts throws TypeError: e.indexOf is not a function; the report
+      page loads empty with zero entries.
+
+  - id: reg-config-loader-indexof
+    group: subject-conflict
+    note: The subject is a different module even though the words overlap heavily.
+    error: >
+      config-loader on Windows: TypeError: e.indexOf is not a function; the plugin list is empty
+      and the client never preloads anything.
+
+  - id: reg-vendor-esm-shim-indexof
+    group: subject-conflict
+    error: >
+      vendor/esm-shim/src/resolve.ts throws TypeError: e.indexOf is not a function under Node
+      24.11.1 on Windows, and the boot graph ends up with no entries.
+
+  # --- wordings that previously leaked a candidate as a match -------------
+  - id: reg-eresolve-other-package
+    group: previously-leaking
+    note: >
+      Found while re-checking the identity gate: a shared ERESOLVE error class
+      matched a different package's dependency failure.
+    error: "npm ERR! ERESOLVE could not resolve peer dependency react@^19 for @acme/design-system"
+
+  - id: reg-csp-plain-english
+    group: previously-leaking
+    error: >
+      The page loads but the browser blocks the client script for security reasons, so nothing
+      renders. Our security policy header only allows scripts from our own origin.
+
+  - id: reg-port-in-use-plain-english
+    group: previously-leaking
+    error: >
+      The web interface will not come up because the process cannot bind its port - something
+      else on this machine is already listening there.

@@ -47,25 +47,35 @@ decide, all measured:
   disk, port, TLS, permission, OOM, module-resolution or version-conflict, a
   candidate that does not exhibit that mechanism is a different incident
   (`different_root_cause`);
-* **subjects must not disagree** - when both sides name concrete subjects and none
-  overlap, a shared error class is not identity (`different_subject`);
+* **subjects must not disagree** - `subject` is its own feature class (packages,
+  module ids, source paths with an identifying directory), kept apart from
+  symbols. When both sides name subjects and none overlap the match is refused
+  (`different_subject`), and that refusal is **not overridable**: a shared
+  function name, exception type or stack frame says how something broke, never
+  what broke;
 * **environment can only veto** - runtime/OS never contributes to identity.
 
-**Verification evidence.** Committed suite: 25 negative controls, 0 false
-incidents, 0 unsafe actions. The three reported leaks (CSP blocking `client.js`,
-`cordis.yml` duplicate key, npm DNS failure) are rejected as
-`different_root_cause` and asserted in `tests/test_identity_gate.py`. A surprise
-holdout of 14 fresh wordings (not committed, run through the installed CLI)
-initially exposed one false incident - an `ERESOLVE` peer-dependency query
-matching a different `ERESOLVE` thread - which produced the `different_subject`
-rule and its regression test; the holdout then passed 14/14 with 0 unsafe actions
-and 0 false incidents.
+**Verification evidence.** Committed suite: 35 negative and regression cases,
+0 false incidents, 0 unsafe actions. The three reported leaks (CSP blocking
+`client.js`, `cordis.yml` duplicate key, npm DNS failure) are rejected as
+`different_root_cause` and asserted in `tests/test_identity_gate.py`.
+`evals/cases/regressions.yaml` adds 10 **developer-authored** wordings - seven
+subject-conflict cases where a different module hits the same `e.indexOf` symbol
+and the same `TypeError`, plus three wordings that previously leaked a candidate.
+All 10 require `matched=false` and forbid upgrade/downgrade/migrate/
+config_change/workaround.
+
+These regression wordings were written by the same developer who wrote the code,
+so they prove the defects are closed - **not** that the system generalises. No
+independent holdout result is claimed here; hidden evaluation is run separately
+by the evaluator.
 
 **Remaining target.** Duplicate-vs-same-incident distinction. Measured over 109
 threads, 3 queries matched a *different* thread; all three were reviewed by hand
 and are plausible duplicate reports (sandbox escalation, pnpm install, subagent
 model inheritance), so they are recorded as duplicates, not errors - but the
-system does not yet say "duplicate of" explicitly.
+system does not yet say "duplicate of" explicitly. Independent hidden evaluation
+is also outstanding and is the evaluator's to run.
 
 **Blockers.** None.
 
@@ -85,8 +95,7 @@ signature only because a real reporter wrote it.
 or batches, and the browser never preloads the dsh client JavaScript module"* -
 now matches discussion 5084 by `behaviour_profile_plus_component` and still goes
 through the version and applicability gates to `upgrade -> dsh-v0.1.2-alpha.2`.
-Two further hand-written rewrites in the holdout also matched and produced the
-same target. 18,555 signatures mined from 505 objects.
+19,185 signatures mined from 505 objects.
 
 **Remaining target.** One documented recall gap, kept in the suite and excluded
 from Correct Action@1 rather than deleted: `para-boot-graph-user-voice`, a rewrite
@@ -101,31 +110,42 @@ for false matches.
 
 ## 4. Measured results
 
-**Current fact.** Committed suite: 55 cases - 10 incidents across 10 subsystems,
-5 paraphrases, 25 negatives, 15 perturbations. 54 pass, 1 is the documented gap.
+**Current fact.** Committed suite: 65 cases - 10 incidents across 10 subsystems,
+5 paraphrases, 25 negatives, 10 developer-authored regressions, 15 perturbations.
+**64 pass, 1 is a documented recall gap** (`para-boot-graph-user-voice`).
+
+The previous iteration of this suite was 55 cases and stood at **54/55** with the
+same single gap; the 10 regression cases were added after it.
+
+**Correct Action@1 exclusion rule:** the documented gap is excluded from the
+denominator (n=29, not 30). It is not counted as a pass and not counted as a
+failure - it is reported separately as `documented_recall_gaps`. Nothing else is
+excluded.
 
 | Metric | Value | n |
 |---|---|---|
-| Correct Action@1 | 1.00 | 29 |
-| negative false-incident rate | 0.00 | 25 |
-| unsafe action rate (negatives) | 0.00 | 25 |
+| Correct Action@1 | 1.00 | 29 (gap excluded) |
+| negative false-incident rate | 0.00 | 35 |
+| unsafe action rate (negatives + regressions) | 0.00 | 35 |
 | unsafe action rate (environment contradictions) | 0.00 | 2 |
 | version/release verdict accuracy | 1.00 | 15 |
 | citation validity | 1.00 | 78 ids |
-| claim-support validity (structural) | 1.00 | 55 |
-| abstention recall | 1.00 | 25 |
-| abstention precision | 0.58 | 43 |
+| claim-support validity (structural) | 1.00 | 65 |
+| abstention recall | 1.00 | 35 |
+| **abstention precision** | **0.66** | 53 |
+| documented recall gaps | 1 | - |
 | future-leakage violations | 0 | - |
-| latency p50 / p95 / max | 74 ms / 700 ms / 724 ms | 55 |
+| latency p50 / p95 / max | 55 ms / 813 ms / 864 ms | 65 |
 
 **Verification evidence.** `python evals/runner.py` writes
 `evals/reports/latest.json`; the hard gates are re-asserted in
 `tests/test_eval_suite.py::TestHardGates`.
 
-**Remaining target.** Abstention precision of 0.58 is honest, not good: it counts
-every `collect_more_info` as an abstention, including the correct "your version
-already contains this change" answers. A better denominator, and B1-B6 baselines,
-are still to build. Claim-support validity is **structural only** - every claim
+**Remaining target.** Abstention precision is the weakest number here: 0.66 now,
+0.58 on the previous 55-case suite. It is honest but crude - it counts every
+`collect_more_info` as an abstention, including the *correct* "your version
+already contains this change" answers, which are informative results rather than
+refusals. A better denominator, and B1-B6 baselines, are still to build. Claim-support validity is **structural only** - every claim
 cites listed, resolvable evidence; nothing yet proves the excerpt entails the
 sentence.
 
@@ -139,16 +159,22 @@ sentence.
 blanket `ignore_errors` and no unexplained `type: ignore`; the only overrides are
 `ignore_missing_imports` for third-party packages that ship no stubs (`mcp`,
 `alembic`, `pgvector`). An MCP server (`repo-troubleshooter-mcp`) exposes exactly
-two read-only tools over stdio, sharing the CLI's engine and contract. A database
-that is down, empty, foreign or stale fails within ~3 seconds with a command to
-run, never a traceback; MCP returns a structured error instead of hanging.
+two tools over stdio, sharing the CLI's engine and contract. Both are declared
+read-only in the protocol (`read_only_hint=True`, `destructive_hint=False`,
+`open_world_hint=False`) and `diagnose` calls the engine with `persist=False`, so
+a tool call cannot write even the derived incident record the CLI may cache. A
+database that is down, empty, foreign or stale fails within ~3 seconds with a
+command to run, never a traceback; MCP returns a structured error instead of
+hanging.
 
 **Verification evidence.** `uv run mypy src` → success. `tests/test_mcp_roundtrip.py`
-drives a real MCP SDK client: lists tools, calls both, and asserts CLI/MCP parity
-on status, action, target, `incident.matched`, `stages.stopped_at` and the
-evidence-id set. Dead-database run measured at 3 s, exit 1, no traceback.
-`repo-troubleshooter-mcp --help` answers and exits instead of starting a session
-(it previously hung - that was found by the delivery gate itself).
+drives a real MCP SDK client: lists tools, calls both, asserts CLI/MCP parity on
+status, action, target, `incident.matched`, `stages.stopped_at` and the
+evidence-id set, checks the read-only annotations over the wire, and counts all
+11 business tables before and after protocol calls - including a matched,
+actionable diagnosis - requiring them identical. Dead-database run measured at
+3 s, exit 1, no traceback. `repo-troubleshooter-mcp --help` answers and exits
+instead of starting a session (it previously hung - found by the delivery gate).
 
 **Remaining target.** Structured errors for partial-sync states inside MCP tool
 payloads beyond the current coverage note.
@@ -159,14 +185,15 @@ payloads beyond the current coverage note.
 
 ## 6. Data
 
-**Current fact.** 550 discussions, 1510 comments, 123 doc files, 7 releases, 18,555
+**Current fact.** 550 discussions, 1510 comments, 123 doc files, 7 releases, 19,185
 symptom signatures. Discussion coverage is still partial and reports `degraded`.
 A paced backfill (`rt sync … --backfill-pages N`) walks older history a few pages
 at a time, persists its GraphQL cursor, resumes where it stopped, and never claims
 `complete` while pages remain.
 
 **Verification evidence.** Backfill measured across three runs: discussions
-402 → 550, comments 1219 → 1510, signatures 15,732 → 18,555; `discussions_backfill`
+402 → 550, comments 1219 → 1510, signatures 15,732 → 18,555 (19,185 after the
+subject class was added); `discussions_backfill`
 stayed `degraded` with `exhausted: false` throughout. `rt status` shows per-source
 health and `data_as_of`.
 
@@ -187,9 +214,11 @@ design. The second repository has not been started.
 `repo-troubleshooter --help`, `diagnose --help`, `repo-troubleshooter-mcp --help`
 and `--check`.
 
-**Verification evidence.** Commands and outputs are listed in the iteration report.
+**Verification evidence.** Commands and outputs are listed in the iteration report,
+each checked by exit code rather than by reading the tail of the output.
 
-**Remaining target.** A green CI run on a pushed commit.
+**Remaining target.** A green CI run on a pushed commit, and an independent
+hidden evaluation run by the evaluator - no such result is claimed here.
 
 **Blockers.** `blocker: no remote configured` - `git remote -v` is empty, and
 pushing is the user's decision. The workflow (lint, format, strict mypy, unit

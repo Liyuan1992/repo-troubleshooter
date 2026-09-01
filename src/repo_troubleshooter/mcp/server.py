@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from mcp.types import ToolAnnotations
 
 from repo_troubleshooter.config import get_settings
 from repo_troubleshooter.diagnosis.contract import DiagnosisRequest, PluginSpec
@@ -30,6 +31,15 @@ from repo_troubleshooter.evidence.packet import resolve as resolve_evidence
 from repo_troubleshooter.store import db
 from repo_troubleshooter.store.migrate import SchemaMismatch, require_schema
 from repo_troubleshooter.sync.upsert import get_repository
+
+# Both tools are queries. The annotations say so in the protocol itself, so a
+# client can enforce read-only before it ever calls us.
+READ_ONLY = ToolAnnotations(
+    read_only_hint=True,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=False,
+)
 
 INSTRUCTIONS = """
 Repository Troubleshooter answers one question: given a user's version and
@@ -78,6 +88,7 @@ def _guard() -> dict[str, Any] | None:
 @mcp.tool(
     name="diagnose",
     title="Diagnose a versioned incident",
+    annotations=READ_ONLY,
     description=(
         "Diagnose an error against synced upstream evidence for one repository. "
         "Returns the same contract as the `repo-troubleshooter diagnose --json` CLI, "
@@ -111,13 +122,16 @@ def diagnose(
         config_keys=list(config_keys or []),
     )
     with db.session_scope() as session:
-        response, _packet, _trace = run_diagnosis(request, session)
+        # persist=False: a query must not write. The CLI may cache a derived
+        # incident record; a read-only tool call may not.
+        response, _packet, _trace = run_diagnosis(request, session, persist=False)
     return {"ok": True, "result": response.to_json()}
 
 
 @mcp.tool(
     name="get_evidence",
     title="Resolve one evidence id",
+    annotations=READ_ONLY,
     description=(
         "Resolve an evidence id returned by `diagnose` (for example "
         "`ev:release:<tag>`) to its source type, locator, url, source time, "
@@ -158,8 +172,8 @@ def describe() -> dict[str, Any]:
         "version": "0.1.0",
         "transport": "stdio",
         "tools": [
-            {"name": "diagnose", "read_only": True},
-            {"name": "get_evidence", "read_only": True},
+            {"name": "diagnose", "read_only": True, "writes": False},
+            {"name": "get_evidence", "read_only": True, "writes": False},
         ],
         "database": get_settings().database_url,
     }

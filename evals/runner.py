@@ -263,6 +263,44 @@ def run_paraphrases(session: Session) -> list[CaseResult]:
     return results
 
 
+def run_regressions(session: Session) -> list[CaseResult]:
+    """Developer-authored wordings that must stay closed.
+
+    Kept apart from `negatives` so nobody can read them as an independent
+    holdout: the same developer wrote the code and these strings.
+    """
+    spec = _load("regressions.yaml")
+    defaults = spec.get("defaults", {})
+    shared = spec.get("expect_all", {})
+    results: list[CaseResult] = []
+    for case in spec.get("cases", []):
+        response, latency = _run(
+            session,
+            repo=spec["repo"],
+            error=case["error"],
+            core_version=case.get("core_version", defaults.get("core_version")),
+            runtime=case.get("runtime", defaults.get("runtime")),
+            os_name=case.get("os", defaults.get("os")),
+        )
+        failures = _check_common(shared, response)
+        if response.recommended_action.target:
+            failures.append(
+                f"regression case produced a target release {response.recommended_action.target!r}"
+            )
+        results.append(
+            CaseResult(
+                case_id=case["id"],
+                kind="regression",
+                passed=not failures,
+                known_gap=bool(case.get("known_gap")),
+                failures=failures,
+                observed=_observed(response),
+                latency_ms=latency,
+            )
+        )
+    return results
+
+
 def run_negatives(session: Session) -> list[CaseResult]:
     spec = _load("negatives.yaml")
     defaults = spec.get("defaults", {})
@@ -330,7 +368,7 @@ def run_perturbations(session: Session) -> list[CaseResult]:
 def compute_metrics(session: Session, report: EvalReport, repo_name: str) -> dict[str, Any]:
     incidents = [r for r in report.results if r.kind == "incident"]
     paraphrases = [r for r in report.results if r.kind == "paraphrase"]
-    negatives = [r for r in report.results if r.kind == "negative"]
+    negatives = [r for r in report.results if r.kind in ("negative", "regression")]
     perturbations = [r for r in report.results if r.kind == "perturbation"]
 
     # Correct Action@1: the first (and only) recommended action is the expected one.
@@ -465,6 +503,7 @@ def run_all(session: Session) -> EvalReport:
     report.results.extend(run_incidents(session))
     report.results.extend(run_paraphrases(session))
     report.results.extend(run_negatives(session))
+    report.results.extend(run_regressions(session))
     report.results.extend(run_perturbations(session))
     spec = _load("incidents.yaml")
     report.metrics = compute_metrics(session, report, spec["repo"])

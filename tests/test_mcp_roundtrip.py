@@ -216,3 +216,106 @@ class TestEvidenceTool:
         assert payload["ok"] is False
         assert payload["error"]["code"] == "repository_not_synced"
         assert "sync" in payload["error"]["remediation"]
+
+
+class TestReadOnly:
+    """An MCP tool call must not change a single row.
+
+    `diagnose` on the CLI may cache a derived incident record; over MCP it may
+    not, so the tool passes `persist=False`. This test counts every business
+    table before and after real protocol calls and requires them identical.
+    """
+
+    TABLES = (
+        "incident_resolution_record",
+        "source_object",
+        "object_revision",
+        "content_unit",
+        "relation_assertion",
+        "release",
+        "release_containment",
+        "git_commit",
+        "symptom_signature",
+        "repository",
+        "sync_state",
+    )
+
+    def _counts(self) -> dict[str, int]:
+        from sqlalchemy import text
+
+        from repo_troubleshooter.store.db import get_engine
+
+        with get_engine().connect() as conn:
+            return {
+                table: conn.execute(text(f"SELECT count(*) FROM {table}")).scalar_one()
+                for table in self.TABLES
+            }
+
+    def test_tools_are_annotated_read_only_in_the_protocol(self):
+        import asyncio
+
+        from mcp import Client
+
+        from repo_troubleshooter.mcp.server import mcp as server
+
+        async def run():  # noqa: ANN202
+            async with Client(server) as client:
+                return (await client.list_tools()).tools
+
+        for tool in asyncio.run(run()):
+            annotations = tool.annotations
+            assert annotations is not None, f"{tool.name} has no annotations"
+            assert annotations.read_only_hint is True, f"{tool.name} is not marked read-only"
+            assert annotations.destructive_hint is False
+            assert annotations.open_world_hint is False
+
+    def test_diagnose_writes_nothing(self):
+        before = self._counts()
+        payload = _call(
+            "diagnose",
+            {
+                "repo": REPO,
+                "error": LOADER_ERROR,
+                "core_version": "0.1.2-alpha.1",
+                "runtime": "node 24.11.1",
+                "os_name": "windows",
+            },
+        )
+        assert payload["ok"] is True
+        # A matched, actionable incident is exactly the case that would tempt a write.
+        assert payload["result"]["incident"]["matched"] is True
+        after = self._counts()
+        assert after == before, f"MCP diagnose changed rows: {before} -> {after}"
+
+    def test_repeated_calls_and_get_evidence_write_nothing(self):
+        before = self._counts()
+        for _ in range(2):
+            result = _call(
+                "diagnose",
+                {
+                    "repo": REPO,
+                    "error": LOADER_ERROR,
+                    "core_version": "0.1.2-alpha.1",
+                    "runtime": "node 24.11.1",
+                },
+            )["result"]
+            for ref in result["evidence"]:
+                _call("get_evidence", {"repo": REPO, "evidence_id": ref["id"]})
+        _call("diagnose", {"repo": REPO, "error": UNRELATED_ERROR, "core_version": "0.1.2-alpha.1"})
+        after = self._counts()
+        assert after == before, f"MCP calls changed rows: {before} -> {after}"
+
+    def test_the_incident_table_specifically_is_untouched(self):
+        """Called out separately: this is the table the engine can persist to."""
+        before = self._counts()["incident_resolution_record"]
+        _call(
+            "diagnose",
+            {
+                "repo": REPO,
+                "error": LOADER_ERROR,
+                "core_version": "0.1.1-rc.2",
+                "runtime": "node 24.11.1",
+            },
+        )
+        after = self._counts()["incident_resolution_record"]
+        assert after == before

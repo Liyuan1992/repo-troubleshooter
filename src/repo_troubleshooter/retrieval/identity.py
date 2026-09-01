@@ -27,6 +27,7 @@ from repo_troubleshooter.fingerprint.features import SymptomFeatures
 
 # Weight per class: what a shared feature of that class is worth.
 CLASS_WEIGHTS = {
+    "subject": 3.0,
     "error": 3.0,
     "structural": 3.0,
     "behavior": 1.5,
@@ -95,11 +96,13 @@ def evaluate(
     """Decide whether a retrieved candidate is the *same incident* as the query."""
     doc_freq = doc_freq or {}
 
+    shared_subject = query.subject & candidate.subject
     shared_error = query.error & candidate.error
     shared_struct = query.structural & candidate.structural
     shared_behavior = query.behavior & candidate.behavior
     shared_component = query.component & candidate.component
     shared = {
+        "subject": sorted(shared_subject),
         "error": sorted(shared_error),
         "structural": sorted(shared_struct),
         "behavior": sorted(shared_behavior),
@@ -120,37 +123,37 @@ def evaluate(
             )
 
     score = (
-        _weighted(shared_error, CLASS_WEIGHTS["error"], doc_freq, corpus_objects)
+        _weighted(shared_subject, CLASS_WEIGHTS["subject"], doc_freq, corpus_objects)
+        + _weighted(shared_error, CLASS_WEIGHTS["error"], doc_freq, corpus_objects)
         + _weighted(shared_struct, CLASS_WEIGHTS["structural"], doc_freq, corpus_objects)
         + _weighted(shared_behavior, CLASS_WEIGHTS["behavior"], doc_freq, corpus_objects)
         + _weighted(shared_component, CLASS_WEIGHTS["component"], doc_freq, corpus_objects)
     )
 
     # --- rule 3: when both sides name subjects and none overlap ---
-    # A shared error class is not identity if the things it happened to are
-    # different: `ERESOLVE` for @acme/design-system and `ERESOLVE` for
-    # @deepseek-ai/dsh are the same npm failure mode, not the same incident.
-    subjects_disjoint = bool(query.structural) and bool(candidate.structural) and not shared_struct
+    # Decisive, and deliberately not overridable. A shared symbol, exception type
+    # or stack frame says how something broke, never *what* broke: `e.indexOf`
+    # and `TypeError` belong to every caller. If one report is about
+    # `theme-parser` and the other about `@deepseek-ai/dsh-client-modules`, they
+    # are different incidents however much vocabulary they share.
+    if query.subject and candidate.subject and not shared_subject:
+        return IdentityVerdict(
+            accepted=False,
+            score=score,
+            rejection="different_subject",
+            shared=shared,
+            reasons=[
+                "the reports name different subjects "
+                f"(this report: {sorted(query.subject)[:3]}; "
+                f"candidate: {sorted(candidate.subject)[:3]}); "
+                "shared symbols or error types do not make them the same incident"
+            ],
+        )
 
     # --- rule 1: which combination of classes is enough to mean "same" ---
     rule: str | None = None
-    if subjects_disjoint:
-        # Only a full behavioural profile can carry identity across different subjects.
-        if len(shared_behavior) >= 3 and len(shared_component) >= 2:
-            rule = "behaviour_profile_plus_component"
-        else:
-            return IdentityVerdict(
-                accepted=False,
-                score=score,
-                rejection="different_subject",
-                shared=shared,
-                reasons=[
-                    "both reports name specific subjects and none of them match "
-                    f"(this report: {sorted(query.structural)[:3]}; "
-                    f"candidate: {sorted(candidate.structural)[:3]}); "
-                    "a shared error class alone is not the same incident"
-                ],
-            )
+    if shared_subject and (shared_error or shared_struct or len(shared_behavior) >= 2):
+        rule = "subject_plus_second_class"
     elif shared_error and (shared_struct or shared_behavior):
         rule = "error_type_plus_second_class"
     elif len(shared_struct) >= 2:
@@ -162,8 +165,9 @@ def evaluate(
 
     if rule is None:
         detail = (
-            f"error={len(shared_error)} structural={len(shared_struct)} "
-            f"behavior={len(shared_behavior)} component={len(shared_component)}"
+            f"subject={len(shared_subject)} error={len(shared_error)} "
+            f"structural={len(shared_struct)} behavior={len(shared_behavior)} "
+            f"component={len(shared_component)}"
         )
         return IdentityVerdict(
             accepted=False,

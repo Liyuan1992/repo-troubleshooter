@@ -137,7 +137,9 @@ def load_features(session: Session, object_id: int) -> SymptomFeatures:
         )
     ).all()
     for kind, value in rows:
-        if kind == "error":
+        if kind == "subject":
+            features.subject.add(value)
+        elif kind == "error":
             features.error.add(value)
         elif kind == "structural":
             features.structural.add(value)
