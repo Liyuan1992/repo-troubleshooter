@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.env
+.env.local
+data/private/
+evals/reports/*.json
+evals/reports/*.md
+*.log
+dist/
+build/
+*.egg-info/
+.cache/
+*.whl

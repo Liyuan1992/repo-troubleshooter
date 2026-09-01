@@ -1,0 +1,99 @@
+# Version and environment perturbations on one verified incident.
+#
+# The point of the whole project: only the environment changes, and the answer
+# has to change with it. A system that recommends the same upgrade in every row
+# is doing semantic pattern matching, not version-aware troubleshooting.
+version: 1
+repo: deepseek-ai/deepseek-harness
+
+base_query:
+  error: |
+    Web UI will not come up on this machine. dsh web launches, but the boot
+    graph is empty: __DSH_BOOT__ has zero entries, and the browser console says
+    client-modules: HTML did not preload @deepseek-ai/dsh-client-modules/client.js
+    The host log shows TypeError: e.indexOf is not a function coming out of
+    packages/loader/src/internal.ts while resolving a module.
+  runtime: node 24.11.1
+  os: windows
+
+# The change is first contained in this release (checked upstream, and
+# re-derived by git ancestry at query time).
+first_release_containing: dsh-v0.1.2-alpha.2
+
+cases:
+  - id: pert-older-release
+    label: older than the first containing release
+    core_version: 0.1.1-rc.2
+    expect:
+      action: upgrade
+      target: dsh-v0.1.2-alpha.2
+
+  - id: pert-immediately-older
+    label: the release right before the fix
+    core_version: 0.1.2-alpha.1
+    expect:
+      action: upgrade
+      target: dsh-v0.1.2-alpha.2
+
+  - id: pert-first-containing
+    label: exactly the first containing release
+    core_version: 0.1.2-alpha.2
+    expect:
+      action_in: [collect_more_info, abstain]
+      forbid_actions: [upgrade]
+      rationale_mentions: already contains
+
+  - id: pert-newer-release
+    label: newer than the first containing release
+    core_version: 0.1.2-alpha.3
+    expect:
+      action_in: [collect_more_info, abstain]
+      forbid_actions: [upgrade]
+      rationale_mentions: already contains
+
+  - id: pert-missing-version
+    label: no version supplied at all
+    core_version: null
+    expect:
+      action_in: [collect_more_info, abstain]
+      forbid_actions: [upgrade]
+
+  - id: pert-unparseable-version
+    label: a build tag that cannot be ordered
+    core_version: nightly-2026-09-01
+    expect:
+      action_in: [collect_more_info, abstain]
+      forbid_actions: [upgrade]
+      applicability: unresolved_version
+      note: >
+        The token contains 2026, which is numerically larger than any release.
+        Reading it as a newer version would be a silent, confident error.
+
+  - id: pert-runtime-contradiction
+    label: a runtime outside the incident's stated range
+    core_version: 0.1.2-alpha.1
+    runtime: node 22.19.0
+    expect:
+      action_in: [collect_more_info, abstain]
+      forbid_actions: [upgrade]
+      applicability: hard_contradiction
+      expect_conflicts: true
+
+  - id: pert-runtime-inside-range
+    label: a different runtime version inside the stated range
+    core_version: 0.1.2-alpha.1
+    runtime: node 24.5.0
+    expect:
+      action: upgrade
+      target: dsh-v0.1.2-alpha.2
+
+  - id: pert-other-os
+    label: same incident reported on a different OS
+    core_version: 0.1.2-alpha.1
+    os: linux
+    expect:
+      action_in: [upgrade, collect_more_info]
+      note: >
+        The incident was reported on Windows. A different OS is weaker evidence,
+        not a contradiction, so either answer is acceptable - but the OS mismatch
+        must show up in the applicability reasoning.

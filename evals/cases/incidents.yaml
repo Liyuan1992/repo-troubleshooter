@@ -1,0 +1,115 @@
+# Incident cases drawn from real upstream threads in deepseek-ai/deepseek-harness.
+#
+# `verified_upstream: true` means the whole chain (symptom -> change -> release)
+# was checked by hand against GitHub, so the case may assert an exact commit and
+# release. The others assert only what is defensible without that check:
+# an incident is matched, and every action stays consistent with containment.
+#
+# Queries are paraphrases. Error strings and symbols are kept because that is
+# what a user actually pastes, but the surrounding prose is deliberately not the
+# thread's wording - the logic must not depend on matching sentences.
+version: 1
+repo: deepseek-ai/deepseek-harness
+
+defaults:
+  runtime: node 24.11.1
+  os: windows
+
+cases:
+  - id: loader-node24-boot-graph-empty
+    kind: incident
+    subsystem: loader / client-modules
+    verified_upstream: true
+    upstream:
+      discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/5084
+      change: https://github.com/deepseek-ai/deepseek-harness/commit/675efe73f2d83202eccf145f8d9da14905c526d3
+      release: https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.2-alpha.2
+    query:
+      error: |
+        Web UI will not come up on this machine. dsh web launches, but the boot
+        graph is empty: __DSH_BOOT__ has zero entries, and the browser console says
+        client-modules: HTML did not preload @deepseek-ai/dsh-client-modules/client.js
+        The host log shows TypeError: e.indexOf is not a function coming out of
+        packages/loader/src/internal.ts while resolving a module.
+      core_version: 0.1.2-alpha.1
+    expect:
+      status: probable
+      action: upgrade
+      target: dsh-v0.1.2-alpha.2
+      matched_discussion: 5084
+      cites_commit: 675efe73f2d83202eccf145f8d9da14905c526d3
+      must_cite_source_types: [discussion, commit, release]
+      forbid_phrases: ["verified fixed", "confirmed fixed", "runtime verified"]
+
+  - id: web-search-provider-availability
+    kind: incident
+    subsystem: web / web-search-deepseek
+    verified_upstream: false
+    upstream:
+      discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/5069
+    query:
+      error: |
+        The availability check in packages/web/web-search-deepseek/src/provider.ts
+        keeps reporting the provider as available when it is not usable, so
+        available() returns true even though search calls fail.
+      core_version: 0.1.1-rc.2
+    expect:
+      matched_incident: true
+      action_in: [upgrade, collect_more_info]
+      target_must_be_real_release: true
+      must_cite_source_types: [discussion]
+
+  - id: agent-presets-stranded-sessions
+    kind: incident
+    subsystem: preset / agent-presets
+    verified_upstream: false
+    upstream:
+      discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/4167
+    query:
+      error: |
+        After restarting the host, resuming an old conversation fails with
+        internal: resume failed for session ...: Error: agent-presets: preset
+        "router-standard" not found (available: standard, code, minimal).
+        Relevant code looks like packages/preset/agent-presets/src/index.ts.
+      core_version: 0.1.1-rc.2
+    expect:
+      matched_incident: true
+      action_in: [upgrade, collect_more_info]
+      target_must_be_real_release: true
+      must_cite_source_types: [discussion]
+
+  - id: profile-agent-preset-roots-overwritten
+    kind: incident
+    subsystem: cli / profile boot
+    verified_upstream: false
+    upstream:
+      discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/3636
+    query:
+      error: |
+        Custom agent-presets roots configured in my profile are replaced by the
+        shipped root every time the host restarts. The composition happens in
+        apps/cli/src/profile-boot.ts.
+      core_version: 0.1.0-rc.7
+    expect:
+      matched_incident: true
+      action_in: [upgrade, collect_more_info]
+      target_must_be_real_release: true
+      must_cite_source_types: [discussion]
+
+  - id: python-sdk-session-resume
+    kind: incident
+    subsystem: session persistence / python sdk
+    verified_upstream: false
+    upstream:
+      discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/4591
+    query:
+      error: |
+        Passing an existing session id from the Python SDK does not resume the
+        conversation; a new session is started instead. The persistence path is
+        packages/session/session-persistence/src/coordinator.ts.
+      core_version: 0.1.0-rc.8
+    expect:
+      matched_incident: true
+      action_in: [upgrade, collect_more_info]
+      target_must_be_real_release: true
+      must_cite_source_types: [discussion]

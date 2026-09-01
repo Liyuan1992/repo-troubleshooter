@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        # pgvector + pg_trgm, matching compose.yaml.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: rt_claude
+          POSTGRES_PASSWORD: rt_claude
+          POSTGRES_DB: rt_claude
+        ports:
+          - 55447:5432
+        options: >-
+          --health-cmd "pg_isready -U rt_claude -d rt_claude"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      RT_DATABASE_URL: postgresql+psycopg://rt_claude:rt_claude@127.0.0.1:55447/rt_claude
+      RT_CLONE_ROOT: ${{ github.workspace }}/.cache/mirrors
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies from the lockfile
+        run: uv sync --extra dev --frozen
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Formatting
+        run: uv run ruff format --check .
+
+      - name: Unit tests (no database, no network)
+        run: uv run pytest -q -m "not db and not live"
+
+      - name: Fresh migration from zero
+        run: |
+          uv run repo-troubleshooter db init
+          uv run repo-troubleshooter db ping
+
+      - name: Database tests (migration replay, idempotence)
+        run: uv run pytest -q -m "db and not live"
+
+      - name: Packaging smoke test
+        run: |
+          uv build
+          python -m venv /tmp/wheelcheck
+          /tmp/wheelcheck/bin/pip install --quiet dist/*.whl
+          /tmp/wheelcheck/bin/repo-troubleshooter --help
+          /tmp/wheelcheck/bin/repo-troubleshooter diagnose --help
+
+      # The `live` suite needs synced upstream data and a GitHub token, so it is
+      # not part of the default run. Enable it deliberately, not by accident.
+      - name: Live evaluation suite
+        if: ${{ vars.RUN_LIVE_EVALS == 'true' }}
+        env:
+          RT_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          uv run repo-troubleshooter sync deepseek-harness --max-discussions 200
+          uv run pytest -q -m live
+          uv run python evals/runner.py

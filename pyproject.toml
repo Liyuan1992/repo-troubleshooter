@@ -1,0 +1,53 @@
+[project]
+name = "repo-troubleshooter"
+version = "0.1.0"
+description = "An evidence-constrained troubleshooting agent that understands how open-source software evolves across versions."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+
+dependencies = [
+    "sqlalchemy>=2.0.36",
+    "alembic>=1.14",
+    "psycopg[binary]>=3.2",
+    "pgvector>=0.3.6",
+    "httpx[socks]>=0.28",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "typer>=0.15",
+    "rich>=13.9",
+    "pyyaml>=6.0",
+    "packaging>=24.2",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "ruff>=0.9",
+]
+
+[project.scripts]
+repo-troubleshooter = "repo_troubleshooter.cli.main:app"
+rt = "repo_troubleshooter.cli.main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/repo_troubleshooter"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+markers = ["live: hits the real GitHub API or a real clone", "db: requires PostgreSQL"]

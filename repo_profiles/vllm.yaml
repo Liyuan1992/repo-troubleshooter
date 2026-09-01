@@ -1,0 +1,38 @@
+# Track A - evaluation repository. Frozen historical cases only; no live product support in V1.
+repo: vllm-project/vllm
+role: evaluation
+
+support_surfaces:
+  discussions: auto
+  issues: true
+  prs: true
+
+version:
+  strategy: semver_like
+  tag_prefixes:
+    - v
+  ignore_tag_patterns:
+    - '^nightly'
+
+docs:
+  paths:
+    - docs/
+  exclude_patterns: []
+
+error_patterns:
+  - python_exception
+  - cuda_error
+  - config_error
+  - engine_error
+
+environment:
+  - vllm_version
+  - python_version
+  - cuda_version
+  - gpu_model
+  - os
+
+notes: >
+  Structurally different from deepseek-harness on purpose (Issues + PRs present,
+  Discussions secondary). If onboarding this repo requires core retrieval or
+  evidence changes rather than profile changes, the design is not general yet.

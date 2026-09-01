@@ -1,0 +1,83 @@
+# Negative controls: real-sounding failures that have nothing to do with this
+# repository, plus distractors built only from words the corpus is full of
+# ("startup", "config", "plugin", "windows", "preload", "session").
+#
+# Passing means abstaining: no incident match, no version action, no claims that
+# cite evidence the system does not have.
+version: 1
+repo: deepseek-ai/deepseek-harness
+
+defaults:
+  core_version: 0.1.2-alpha.1
+  runtime: node 24.11.1
+  os: windows
+
+expect_all:
+  action_in: [abstain, collect_more_info]
+  forbid_actions: [upgrade, downgrade, migrate, config_change]
+  no_unsupported_claims: true
+
+cases:
+  - id: neg-postgres-connection
+    domain: database
+    error: "PostgreSQL startup failed: connection refused at 127.0.0.1:5432 while applying migrations"
+
+  - id: neg-mysql-access-denied
+    domain: database
+    error: "ERROR 1045 (28000): Access denied for user 'app'@'10.0.0.4' (using password: YES)"
+
+  - id: neg-oauth-invalid-grant
+    domain: authentication
+    error: "OAuth login failed: invalid_grant returned by the identity provider during token exchange"
+
+  - id: neg-jwt-expired
+    domain: authentication
+    error: "JsonWebTokenError: jwt expired at verification time; refresh flow returned 401 Unauthorized"
+
+  - id: neg-proxy-timeout
+    domain: networking
+    error: "curl: (7) Failed to connect to proxy.internal port 8080: Connection timed out"
+
+  - id: neg-dns-resolution
+    domain: networking
+    error: "getaddrinfo EAI_AGAIN registry.example.com: temporary failure in name resolution"
+
+  - id: neg-tls-issuer
+    domain: networking
+    error: "SSL certificate problem: unable to get local issuer certificate while cloning the repository"
+
+  - id: neg-docker-port-binding
+    domain: infrastructure
+    error: "docker: Error response from daemon: driver failed programming external connectivity on endpoint"
+
+  - id: neg-k8s-crd-missing
+    domain: infrastructure
+    error: "kubectl apply failed: the server could not find the requested resource (CustomResourceDefinition not installed)"
+
+  - id: neg-redis-readonly
+    domain: infrastructure
+    error: "Redis connection lost: READONLY You can't write against a read only replica"
+
+  - id: neg-disk-space
+    domain: infrastructure
+    error: "ENOSPC: no space left on device, write to /var/lib/data/spool"
+
+  - id: neg-python-missing-module
+    domain: unrelated toolchain
+    error: "ModuleNotFoundError: No module named 'pandas' when running the nightly analytics job"
+
+  - id: neg-unrelated-plugin-ecosystem
+    domain: unrelated plugin
+    error: "eslint-plugin-import: Unable to resolve path to module '@company/design-tokens' in .eslintrc.cjs"
+
+  - id: neg-distractor-generic-words
+    domain: distractor
+    note: >
+      Every word here is common in the corpus (startup, config, plugin, windows,
+      preload, server). Nothing identifies a specific fault, so a system that
+      matches on topical similarity will fail this case.
+    error: "startup failed due to a config error on windows with a plugin enabled; the server did not start and the log shows a preload warning"
+
+  - id: neg-distractor-session-words
+    domain: distractor
+    error: "session error after restart: the client shows an empty screen and the host logs a warning during startup"

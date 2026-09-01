@@ -1,0 +1,195 @@
+"""Public diagnosis contract.
+
+This is the black-box interface: the CLI and (later) MCP both speak exactly
+this. Two rules shape it.
+
+* **Privacy is bounded at the door.** The request carries versions, an error
+  string and config *key names*. Anything that looks like a secret is redacted
+  before it is stored or logged, and raw logs/config require an explicit opt-in.
+* **Confidence belongs to a claim, not to the answer.** There is no
+  ``answer_confidence`` field, by design.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import re
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field, field_validator
+
+Status = Literal["confirmed", "probable", "insufficient_evidence", "conflicting"]
+ActionType = Literal[
+    "upgrade",
+    "downgrade",
+    "migrate",
+    "config_change",
+    "workaround",
+    "collect_more_info",
+    "abstain",
+]
+ClaimType = Literal["symptom_match", "change", "affected_in", "released_in", "action", "conflict"]
+Confidence = Literal["high", "medium", "low"]
+# How we know: stated outright / provable by git / observed once / concluded by us.
+Basis = Literal["explicit", "deterministic", "observed", "inferred"]
+
+# --- privacy ----------------------------------------------------------------
+
+_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{16,}"), "<redacted:github-token>"),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"), "<redacted:api-key>"),
+    (re.compile(r"\bxox[abps]-[A-Za-z0-9-]{10,}"), "<redacted:slack-token>"),
+    (
+        re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
+        "<redacted:jwt>",
+    ),
+    (
+        re.compile(
+            r"(?i)\b(api[_-]?key|secret|password|passwd|token|authorization|cookie)\b"
+            r"\s*[:=]\s*['\"]?[^\s'\"]{6,}"
+        ),
+        r"\1=<redacted>",
+    ),
+    (re.compile(r"(?i)\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), "<redacted:email>"),
+    # Home directories leak the user's name even when the path itself is harmless.
+    (re.compile(r"(?i)\b[A-Za-z]:\\Users\\[^\\\s]+"), r"C:\\Users\\<user>"),
+    (re.compile(r"(?i)/(?:home|Users)/[^/\s]+"), "/home/<user>"),
+)
+
+
+def redact(text: str | None) -> str | None:
+    """Strip credentials and personal paths. Applied before storage or logging."""
+    if not text:
+        return text
+    out = text
+    for pattern, replacement in _SECRET_PATTERNS:
+        out = pattern.sub(replacement, out)
+    return out
+
+
+# --- request ----------------------------------------------------------------
+
+
+class PluginSpec(BaseModel):
+    name: str
+    version: str | None = None
+
+
+class DiagnosisRequest(BaseModel):
+    """What the user's machine may send. Nothing here is free-form telemetry."""
+
+    repo: str
+    error: str | None = None
+    question: str | None = None
+    core_version: str | None = None
+    runtime: str | None = None  # e.g. "node 24.11.1"
+    os: str | None = None  # e.g. "windows"
+    plugins: list[PluginSpec] = Field(default_factory=list)
+    # Key NAMES only. Values are never requested.
+    config_keys: list[str] = Field(default_factory=list)
+    # Explicit opt-in before any raw log text is retained.
+    allow_raw_logs: bool = False
+
+    @field_validator("error", "question", mode="after")
+    @classmethod
+    def _redact_free_text(cls, value: str | None) -> str | None:
+        return redact(value)
+
+    @field_validator("config_keys", mode="after")
+    @classmethod
+    def _keys_only(cls, values: list[str]) -> list[str]:
+        # Defence in depth: if a caller sends key=value, keep only the key.
+        return [v.split("=", 1)[0].strip() for v in values if v.strip()]
+
+    def runtime_name_version(self) -> tuple[str | None, str | None]:
+        if not self.runtime:
+            return None, None
+        match = re.match(r"\s*([A-Za-z][\w.+-]*)\s*[@ ]?\s*v?([\d][\w.+-]*)?", self.runtime)
+        if not match:
+            return self.runtime.strip().lower() or None, None
+        name = (match.group(1) or "").lower() or None
+        return name, match.group(2)
+
+    def environment_json(self) -> dict[str, Any]:
+        name, version = self.runtime_name_version()
+        return {
+            "repo": self.repo,
+            "core_version": self.core_version,
+            "runtime": self.runtime,
+            "runtime_name": name,
+            "runtime_version": version,
+            "os": (self.os or "").lower() or None,
+            "plugins": [p.model_dump() for p in self.plugins],
+            "config_keys": self.config_keys,
+        }
+
+
+# --- response ---------------------------------------------------------------
+
+
+class EvidenceRef(BaseModel):
+    """A citation the caller can resolve with `get-evidence`."""
+
+    id: str
+    source_type: str
+    locator: str
+    url: str | None = None
+    role: str = "context"
+    source_event_time: dt.datetime | None = None
+    knowledge_available_time: dt.datetime | None = None
+    excerpt: str | None = None
+
+
+class Claim(BaseModel):
+    type: ClaimType
+    value: str
+    confidence: Confidence
+    basis: Basis
+    evidence_ids: list[str] = Field(default_factory=list)
+
+    @property
+    def supported(self) -> bool:
+        return bool(self.evidence_ids)
+
+
+class RecommendedAction(BaseModel):
+    type: ActionType
+    target: str | None = None
+    rationale: str | None = None
+    confidence: Confidence = "low"
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class IncidentSummary(BaseModel):
+    matched: bool = False
+    incident_id: str | None = None
+    title: str | None = None
+    url: str | None = None
+    symptom_signature: str | None = None
+    matched_tokens: list[str] = Field(default_factory=list)
+    score: float = 0.0
+    resolution_signal: str | None = None
+
+
+class DiagnosisResponse(BaseModel):
+    status: Status
+    environment: dict[str, Any] = Field(default_factory=dict)
+    incident: IncidentSummary = Field(default_factory=IncidentSummary)
+    applicability: dict[str, Any] = Field(default_factory=dict)
+    claims: list[Claim] = Field(default_factory=list)
+    recommended_action: RecommendedAction
+    conflicts: list[str] = Field(default_factory=list)
+    missing_information: list[str] = Field(default_factory=list)
+    evidence: list[EvidenceRef] = Field(default_factory=list)
+    data_as_of: dt.datetime | None = None
+    sync_health: str = "unknown"
+    coverage_notes: list[str] = Field(default_factory=list)
+    fingerprint: dict[str, Any] = Field(default_factory=dict)
+    provider: str = "deterministic"
+
+    @property
+    def unsupported_claims(self) -> list[Claim]:
+        return [c for c in self.claims if not c.supported]
+
+    def to_json(self) -> dict[str, Any]:
+        return self.model_dump(mode="json")

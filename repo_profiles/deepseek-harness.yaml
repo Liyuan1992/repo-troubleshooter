@@ -1,0 +1,42 @@
+# Track B - live repository, dogfooding target.
+# Probed 2026-09-01: Issues disabled (0), public PRs 0, Discussions 5167.
+# The evidence chain here is Discussion -> Release note -> Commit -> Tag ancestry -> Docs@tag.
+repo: deepseek-ai/deepseek-harness
+role: live
+
+support_surfaces:
+  discussions: true
+  issues: false   # disabled upstream; do not assume an Issue -> PR -> Commit chain
+  prs: false      # no public pull requests
+
+version:
+  strategy: semver_like
+  tag_prefixes:
+    - dsh-v
+    - v
+  ignore_tag_patterns:
+    - '^nightly-'
+
+docs:
+  paths:
+    - docs/
+  exclude_patterns:
+    - '\.zh\.md$'      # translation of the canonical English doc
+    - '\.i18n\.yaml$'  # i18n bundle, not prose
+
+error_patterns:
+  - service_error
+  - plugin_error
+  - runtime_error
+  - config_error
+
+environment:
+  - harness_version
+  - plugin_version
+  - node_version
+  - os
+
+notes: >
+  TypeScript monorepo (apps/, packages/, native/, python/). Release notes are
+  bilingual with a "Full Changelog" compare link, which is the highest-value
+  bridge from a release to the commits it contains.

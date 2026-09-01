@@ -1,0 +1,30 @@
+# Isolated PostgreSQL for this project only.
+#
+# Sibling experiments on this machine previously ran their own Alembic migrations
+# into a shared container on port 55432 and overwrote this project's schema. Every
+# identity below is therefore unique to this artifact: compose project name,
+# container name, volume, database name and port. The port is bound to 127.0.0.1
+# so nothing outside this machine can reach it.
+name: repo-troubleshooter-claude
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: rt-claude-postgres
+    environment:
+      POSTGRES_USER: rt_claude
+      POSTGRES_PASSWORD: rt_claude
+      POSTGRES_DB: rt_claude
+    ports:
+      - "127.0.0.1:55447:5432"
+    volumes:
+      - rt-claude-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rt_claude -d rt_claude"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  rt-claude-pgdata:
+    name: rt-claude-pgdata
