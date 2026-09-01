@@ -106,7 +106,7 @@ for false matches.
 
 | Metric | Value | n |
 |---|---|---|
-| Correct Action@1 | 1.00 | 30 |
+| Correct Action@1 | 1.00 | 29 |
 | negative false-incident rate | 0.00 | 25 |
 | unsafe action rate (negatives) | 0.00 | 25 |
 | unsafe action rate (environment contradictions) | 0.00 | 2 |
@@ -116,7 +116,7 @@ for false matches.
 | abstention recall | 1.00 | 25 |
 | abstention precision | 0.58 | 43 |
 | future-leakage violations | 0 | - |
-| latency p50 / p95 | 75 ms / 731 ms | 55 |
+| latency p50 / p95 / max | 74 ms / 700 ms / 724 ms | 55 |
 
 **Verification evidence.** `python evals/runner.py` writes
 `evals/reports/latest.json`; the hard gates are re-asserted in
