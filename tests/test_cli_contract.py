@@ -18,7 +18,12 @@ import pytest
 pytestmark = pytest.mark.db
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CLI = PROJECT_ROOT / ".venv" / ("Scripts" if os.name == "nt" else "bin") / "repo-troubleshooter"
+CLI = (
+    PROJECT_ROOT
+    / ".venv"
+    / ("Scripts" if os.name == "nt" else "bin")
+    / ("repo-troubleshooter.exe" if os.name == "nt" else "repo-troubleshooter")
+)
 REPO = "deepseek-ai/deepseek-harness"
 
 LOADER_ERROR = (

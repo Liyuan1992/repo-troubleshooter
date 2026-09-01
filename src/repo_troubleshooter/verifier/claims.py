@@ -112,6 +112,14 @@ def verify(
 
     response.claims = survivors
 
+    # The verifier may withdraw the whole incident, not merely a citation: if the
+    # symptom claim did not survive, there is nothing left that says "same problem".
+    if response.incident.matched and not any(c.type == "symptom_match" for c in survivors):
+        reason = "the symptom match did not verify, so no incident is claimed"
+        report.dropped.append({"claim": "incident", "type": "incident", "reason": reason})
+        response.revoke_incident(reason)
+        return report
+
     # An action must still be backed by surviving evidence.
     action = response.recommended_action
     if action.evidence_ids:

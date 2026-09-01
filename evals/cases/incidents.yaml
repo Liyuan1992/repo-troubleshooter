@@ -1,115 +1,302 @@
-# Incident cases drawn from real upstream threads in deepseek-ai/deepseek-harness.
+# Incident cases, re-derived after the identity gate was tightened.
+#
+# The query for each case is what a user actually pastes: the thread's own title
+# plus its first log or code block. The engine must recognise *that same thread*
+# - self-identity is checkable ground truth, not a gold label - and any action it
+# proposes must cite a real release.
 #
 # `verified_upstream: true` means the whole chain (symptom -> change -> release)
-# was checked by hand against GitHub, so the case may assert an exact commit and
-# release. The others assert only what is defensible without that check:
-# an incident is matched, and every action stays consistent with containment.
+# was checked by hand on GitHub, so that case asserts an exact commit and target.
+# The others assert only what is defensible without that check.
 #
-# Queries are paraphrases. Error strings and symbols are kept because that is
-# what a user actually pastes, but the surrounding prose is deliberately not the
-# thread's wording - the logic must not depend on matching sentences.
-version: 1
+# Regenerating: scripts are not committed; the selection below was reviewed by
+# hand from the self-match pool and the expectations were written, not scraped.
+version: 2
 repo: deepseek-ai/deepseek-harness
-
 defaults:
-  runtime: node 24.11.1
   os: windows
-
 cases:
-  - id: loader-node24-boot-graph-empty
-    kind: incident
-    subsystem: loader / client-modules
-    verified_upstream: true
-    upstream:
-      discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/5084
-      change: https://github.com/deepseek-ai/deepseek-harness/commit/675efe73f2d83202eccf145f8d9da14905c526d3
-      release: https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.2-alpha.2
-    query:
-      error: |
-        Web UI will not come up on this machine. dsh web launches, but the boot
-        graph is empty: __DSH_BOOT__ has zero entries, and the browser console says
-        client-modules: HTML did not preload @deepseek-ai/dsh-client-modules/client.js
-        The host log shows TypeError: e.indexOf is not a function coming out of
-        packages/loader/src/internal.ts while resolving a module.
-      core_version: 0.1.2-alpha.1
-    expect:
-      status: probable
-      action: upgrade
-      target: dsh-v0.1.2-alpha.2
-      matched_discussion: 5084
-      cites_commit: 675efe73f2d83202eccf145f8d9da14905c526d3
-      must_cite_source_types: [discussion, commit, release]
-      forbid_phrases: ["verified fixed", "confirmed fixed", "runtime verified"]
+- id: loader-node24-boot-graph-empty
+  kind: incident
+  subsystem: loader / client-modules
+  verified_upstream: true
+  upstream:
+    discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/5084
+    change: https://github.com/deepseek-ai/deepseek-harness/commit/675efe73f2d83202eccf145f8d9da14905c526d3
+    release: https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.1.2-alpha.2
+  query:
+    error: 'Web UI will not come up on this machine. dsh web launches, but the boot
 
-  - id: web-search-provider-availability
-    kind: incident
-    subsystem: web / web-search-deepseek
-    verified_upstream: false
-    upstream:
-      discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/5069
-    query:
-      error: |
-        The availability check in packages/web/web-search-deepseek/src/provider.ts
-        keeps reporting the provider as available when it is not usable, so
-        available() returns true even though search calls fail.
-      core_version: 0.1.1-rc.2
-    expect:
-      matched_incident: true
-      action_in: [upgrade, collect_more_info]
-      target_must_be_real_release: true
-      must_cite_source_types: [discussion]
+      graph is empty: __DSH_BOOT__ has zero entries, and the browser console says
 
-  - id: agent-presets-stranded-sessions
-    kind: incident
-    subsystem: preset / agent-presets
-    verified_upstream: false
-    upstream:
-      discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/4167
-    query:
-      error: |
-        After restarting the host, resuming an old conversation fails with
-        internal: resume failed for session ...: Error: agent-presets: preset
-        "router-standard" not found (available: standard, code, minimal).
-        Relevant code looks like packages/preset/agent-presets/src/index.ts.
-      core_version: 0.1.1-rc.2
-    expect:
-      matched_incident: true
-      action_in: [upgrade, collect_more_info]
-      target_must_be_real_release: true
-      must_cite_source_types: [discussion]
+      client-modules: HTML did not preload @deepseek-ai/dsh-client-modules/client.js
 
-  - id: profile-agent-preset-roots-overwritten
-    kind: incident
-    subsystem: cli / profile boot
-    verified_upstream: false
-    upstream:
-      discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/3636
-    query:
-      error: |
-        Custom agent-presets roots configured in my profile are replaced by the
-        shipped root every time the host restarts. The composition happens in
-        apps/cli/src/profile-boot.ts.
-      core_version: 0.1.0-rc.7
-    expect:
-      matched_incident: true
-      action_in: [upgrade, collect_more_info]
-      target_must_be_real_release: true
-      must_cite_source_types: [discussion]
+      The host log shows TypeError: e.indexOf is not a function coming out of
 
-  - id: python-sdk-session-resume
-    kind: incident
-    subsystem: session persistence / python sdk
-    verified_upstream: false
-    upstream:
-      discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/4591
-    query:
-      error: |
-        Passing an existing session id from the Python SDK does not resume the
-        conversation; a new session is started instead. The persistence path is
-        packages/session/session-persistence/src/coordinator.ts.
-      core_version: 0.1.0-rc.8
-    expect:
-      matched_incident: true
-      action_in: [upgrade, collect_more_info]
-      target_must_be_real_release: true
-      must_cite_source_types: [discussion]
+      packages/loader/src/internal.ts while resolving a module.
+
+      '
+    core_version: 0.1.2-alpha.1
+    runtime: node 24.11.1
+    os: windows
+  expect:
+    status: probable
+    action: upgrade
+    target: dsh-v0.1.2-alpha.2
+    matched_discussion: 5084
+    cites_commit: 675efe73f2d83202eccf145f8d9da14905c526d3
+    must_cite_source_types:
+    - discussion
+    - commit
+    - release
+    forbid_phrases:
+    - verified fixed
+    - confirmed fixed
+    - runtime verified
+    no_unsupported_claims: true
+- id: web-search-provider-availability
+  kind: incident
+  subsystem: web / web-search-deepseek
+  verified_upstream: false
+  upstream:
+    discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/5069
+  query:
+    error: "web-search-deepseek 中 available 方法的判断是不是有问题\n\navailable(): boolean {\n    const options\
+      \ = this.resolveOptions()\n    return ((options.apiKey?.length ?? 0) > 0 || options.resolveApiKey\
+      \ !== undefined)\n      && URL.canParse(options.baseURL)\n      && isPositiveInteger(options.maxTokens)\n\
+      \      && isPositiveInteger(options.maxUses)\n  }\n"
+    core_version: 0.1.0-rc.7
+  expect:
+    matched_incident: true
+    matched_discussion: 5069
+    action_in:
+    - upgrade
+    - collect_more_info
+    target_must_be_real_release: true
+    must_cite_source_types:
+    - discussion
+    no_unsupported_claims: true
+    forbid_phrases:
+    - verified fixed
+    - runtime verified
+- id: agent-prompt-variable-noop
+  kind: incident
+  subsystem: core / agent prompt variables
+  verified_upstream: false
+  upstream:
+    discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/4967
+  query:
+    error: "Programmatic agent creation silently no-ops: prompt variable \"{{model}}\" has no value,\
+      \ loop swallows the error (dsh 0.1.1-rc.2)\n\nconst handle = await ctx.agents.create({\n     sessionId:\
+      \ SessionId(randomUUID()),\n     meta: { cwd, agentPreset: \"standard\" },\n     agentOptions:\
+      \ { provider: \"deepseek-official\" },  // no model\n     setup: async (agentCtx) => { await ctx.agentPresets.mount(agentCtx,\
+      \ \"standard\"); }\n   });\n   handle.agent.followup(createUserMessage({ content: [{ type: \"\
+      text\", text: \"hello\" }], source: { kind: \"plugin\", plugin: \"x\" } }));\n   await handle.agent.whenIdle();\n"
+    core_version: 0.1.0-rc.7
+  expect:
+    matched_incident: true
+    matched_discussion: 4967
+    action_in:
+    - upgrade
+    - collect_more_info
+    target_must_be_real_release: true
+    must_cite_source_types:
+    - discussion
+    no_unsupported_claims: true
+    forbid_phrases:
+    - verified fixed
+    - runtime verified
+- id: python-sdk-session-resume
+  kind: incident
+  subsystem: session persistence / python sdk
+  verified_upstream: false
+  upstream:
+    discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/4591
+  query:
+    error: "[BUG] Python SDK当 session ID 存在时无法 resume 对话\n\nimport json\n\nfrom pathlib import Path\n\
+      from deepseek_harness import DeepSeekHarness, DeepSeekHarnessConfig\n\ncwd = Path(\".\").resolve()\n\
+      config = Path(\"./cordis.yml\").resolve()\nsession = Path(\".sessions\").resolve()\n\nwhile True:\n\
+      \    with DeepSeekHarness(\n        config=DeepSeekHarnessConfig(\n            provider=\"openai\"\
+      ,\n            model=\"Qwen3.8\",\n            max_tokens=15200,\n            cordis=str(config),\n\
+      \            cwd=str(cwd),\n            session_root=str(session),\n            base_url=\"http://***\"\
+      ,\n            api_key=\"sk-***\",\n        )\n    ) as harness:\n        query = input(\"user->\"\
+      )\n        result = harness.run(query, session_id=\"id-123\")\n\n        print(result.session_root,\
+      \ result.session_id)\n        print(result.final_response)\n"
+    core_version: 0.1.0-rc.7
+  expect:
+    matched_incident: true
+    matched_discussion: 4591
+    action_in:
+    - upgrade
+    - collect_more_info
+    target_must_be_real_release: true
+    must_cite_source_types:
+    - discussion
+    no_unsupported_claims: true
+    forbid_phrases:
+    - verified fixed
+    - runtime verified
+- id: directory-picker-host-payload
+  kind: incident
+  subsystem: host / directory-picker
+  verified_upstream: false
+  upstream:
+    discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/4575
+  query:
+    error: "directory-picker-browse: New-folder errors show `invalid payload for host.createDirectory`\
+      \ because the UI drops rpcError.details.issues\n\n}).refine(payload => payload.name.trim() !==\
+      \ '' && payload.name !== '.' && payload.name !== '..'\n    && !/[/\\\\]/.test(payload.name),\n\
+      \    { message: 'host.createDirectory requires a single non-blank path segment name' });\n"
+    core_version: 0.1.0-rc.7
+  expect:
+    matched_incident: true
+    matched_discussion: 4575
+    action_in:
+    - upgrade
+    - collect_more_info
+    target_must_be_real_release: true
+    must_cite_source_types:
+    - discussion
+    no_unsupported_claims: true
+    forbid_phrases:
+    - verified fixed
+    - runtime verified
+- id: preset-mounting-discovery
+  kind: incident
+  subsystem: preset / agent-presets
+  verified_upstream: false
+  upstream:
+    discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/4542
+  query:
+    error: 'Two preset-mounting bugs in 0.1.1-rc.2 (symlinked preset dirs skipped in discovery; duplicate
+      inspect provider registration) — with patches
+
+
+      agent-preset-invalid: preset "…" failed to mount: failed to apply loader entry tool-cordis (@deepseek-ai/dsh-tool-cordis):
+
+      Host Cordis inspect provider "Service" is already registered
+
+      '
+    core_version: 0.1.0-rc.7
+  expect:
+    matched_incident: true
+    matched_discussion: 4542
+    action_in:
+    - upgrade
+    - collect_more_info
+    target_must_be_real_release: true
+    must_cite_source_types:
+    - discussion
+    no_unsupported_claims: true
+    forbid_phrases:
+    - verified fixed
+    - runtime verified
+- id: llm-body-timeout
+  kind: incident
+  subsystem: llm / gateway
+  verified_upstream: false
+  upstream:
+    discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/4518
+  query:
+    error: "用本地模型报错: Body Timeout Error\n\nTypeError: terminated\n    at Fetch.onAborted (node:internal/deps/undici/undici:13842:53)\n\
+      \    at Fetch.emit (node:events:509:28)\n    at Fetch.terminate (node:internal/deps/undici/undici:12972:14)\n\
+      \    at Object.onError (node:internal/deps/undici/undici:13976:38)\n    at Request.onError (node:internal/deps/undici/undici:3121:31)\n\
+      \    at Object.errorRequest (node:internal/deps/undici/undici:1942:17)\n    at Socket.onHttpSocketClose\
+      \ (node:internal/deps/undici/undici:7860:14)\n    at Socket.emit (node:events:521:24)\n    at\
+      \ TCP.<anonymous> (node:net:355:12)\n    at TCP.callbackTrampoline (node:internal/async_hooks:130:17)`\n\
+      \t\n  name: \"BodyTimeoutError\",\n  code: \"UND_ERR_BODY_TIMEOUT\",\n  message: \"Body Timeout\
+      \ Error\",\n"
+    core_version: 0.1.0-rc.7
+  expect:
+    matched_incident: true
+    matched_discussion: 4518
+    action_in:
+    - upgrade
+    - collect_more_info
+    target_must_be_real_release: true
+    must_cite_source_types:
+    - discussion
+    no_unsupported_claims: true
+    forbid_phrases:
+    - verified fixed
+    - runtime verified
+- id: rpc-crypto-random-uuid-over-http
+  kind: incident
+  subsystem: client / rpc transport
+  verified_upstream: false
+  upstream:
+    discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/4376
+  query:
+    error: "非 localhost HTTP 访问 web GUI 时 RPC 全部失败：crypto.randomUUID is not a function\n\nprotected\
+      \ override mintRpcId(): RpcId {\n  return RpcId(randomUuid())\n}\n"
+    core_version: 0.1.0-rc.7
+  expect:
+    matched_incident: true
+    matched_discussion: 4376
+    action_in:
+    - upgrade
+    - collect_more_info
+    target_must_be_real_release: true
+    must_cite_source_types:
+    - discussion
+    no_unsupported_claims: true
+    forbid_phrases:
+    - verified fixed
+    - runtime verified
+- id: plugin-commands-render-nothing
+  kind: incident
+  subsystem: client / launcher commands
+  verified_upstream: false
+  upstream:
+    discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/4066
+  query:
+    error: "Plugin-registered commands execute but render nothing on the launcher screen\n\nexport const\
+      \ name = 'dsh-probe-repro';\nexport const inject = ['commands'];\n\nexport function apply(ctx)\
+      \ {\n  ctx.commands.register({\n    name: 'probe',\n    description: 'Minimal probe: returns one\
+      \ line of text',\n    handler: () => ({ kind: 'success', text: 'probe ok — if you can read this,\
+      \ rendering worked' }),\n  });\n}\n"
+    core_version: 0.1.0-rc.7
+  expect:
+    matched_incident: true
+    matched_discussion: 4066
+    action_in:
+    - upgrade
+    - collect_more_info
+    target_must_be_real_release: true
+    must_cite_source_types:
+    - discussion
+    no_unsupported_claims: true
+    forbid_phrases:
+    - verified fixed
+    - runtime verified
+- id: typescript-build-blocked
+  kind: incident
+  subsystem: build / typescript
+  verified_upstream: false
+  upstream:
+    discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/5116
+  query:
+    error: "Bug: pre-existing TS errors block pnpm run build on master (5 errors in test files, @types/react\
+      \ bigint/ReactNode)\n\npackages/client/ui-conversation/tests/input-bar.client.spec.tsx(150,9):\
+      \ error TS2375\n  Type '{ rightItems?: ... bigint ... }' is not assignable to type 'ComposerBarProps'\
+      \ with\n  'exactOptionalPropertyTypes: true'. Types of property 'accessory' are incompatible.\n\
+      \  Type 'bigint' is not assignable to type 'ReactNode'.\npackages/client/ui-renderer/tests/session-provider.client.spec.tsx(161,26):\
+      \ error TS2322\n  Type 'React.ReactNode' is not assignable to type 'ReactNode'. Type 'bigint'\
+      \ is not assignable to type 'ReactNode'.\npackages/client/ui-renderer/tests/session-provider.client.spec.tsx(184,26):\
+      \ error TS2322 (same)\npackages/client/ui-renderer/tests/session-provider.client.spec.tsx(211,26):\
+      \ error TS2322 (same)\npackages/test-support/client-runtime/tests/runtime.client.spec.tsx(326,34):\
+      \ error TS2322 (same)\n"
+    core_version: 0.1.0-rc.7
+  expect:
+    matched_incident: true
+    matched_discussion: 5116
+    action_in:
+    - upgrade
+    - collect_more_info
+    target_must_be_real_release: true
+    must_cite_source_types:
+    - discussion
+    no_unsupported_claims: true
+    forbid_phrases:
+    - verified fixed
+    - runtime verified

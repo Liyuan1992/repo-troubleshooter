@@ -10,7 +10,7 @@ pretending we saw the whole thread.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -221,6 +221,9 @@ def iter_discussions(
     updated_after: dt.datetime | None = None,
     max_items: int = 0,
     category_id: str | None = None,
+    start_cursor: str | None = None,
+    page_budget: int = 0,
+    on_page: Callable[[str | None, int], None] | None = None,
 ) -> Iterator[Discussion]:
     """Yield discussions newest-updated first.
 
@@ -228,8 +231,14 @@ def iter_discussions(
     ``max_items`` (0 = unlimited) is the scope guard for a first sync;
     ``category_id`` narrows the walk to one discussion category (e.g. Q&A),
     which is how we keep the first sync inside the GraphQL point budget.
+
+    ``start_cursor`` resumes a paced backfill where the last run stopped;
+    ``page_budget`` (0 = unlimited) caps how many pages this run may fetch, and
+    ``on_page`` receives ``(end_cursor, pages_fetched)`` after each page so the
+    caller can persist progress and resume later.
     """
-    cursor: str | None = None
+    cursor: str | None = start_cursor
+    pages = 0
     yielded = 0
     while True:
         data = client.graphql(
@@ -259,9 +268,14 @@ def iter_discussions(
                 return
 
         page_info = conn.get("pageInfo") or {}
+        pages += 1
+        cursor = page_info.get("endCursor")
+        if on_page is not None:
+            on_page(cursor if page_info.get("hasNextPage") else None, pages)
         if not page_info.get("hasNextPage"):
             return
-        cursor = page_info.get("endCursor")
+        if page_budget and pages >= page_budget:
+            return
 
 
 def fetch_remaining_comments(

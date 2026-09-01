@@ -8,7 +8,7 @@ never be presented as a complete one.
 from __future__ import annotations
 
 import json
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import typer
 from rich.console import Console
@@ -49,19 +49,37 @@ app.add_typer(db_app, name="db")
 console = Console()
 
 
-def _fail(message: str) -> None:
+def _fail(message: str) -> NoReturn:
+    """Print one short, actionable line and exit non-zero."""
     console.print(f"[bold red]error[/bold red] {message}")
     raise typer.Exit(code=1)
 
 
+DB_DOWN_HELP = (
+    "  start it with:  docker compose up -d\n  then:           repo-troubleshooter db init"
+)
+
+
 def _require_schema() -> None:
-    """Refuse to run against an empty, stale, or foreign database."""
+    """Refuse to run against an empty, stale, or foreign database.
+
+    Any failure exits non-zero within seconds and prints a command the user can
+    run. A stack trace is not an answer to "the database is not up".
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
     from repo_troubleshooter.store.migrate import SchemaMismatch, require_schema
 
     try:
         require_schema()
     except SchemaMismatch as exc:
         _fail("database check failed\n" + str(exc))
+    except SQLAlchemyError as exc:
+        _fail(
+            f"cannot reach PostgreSQL at {get_settings().database_url}\n"
+            + DB_DOWN_HELP
+            + f"\n  [{type(exc).__name__}]"
+        )
 
 
 # --- db ---------------------------------------------------------------------
@@ -86,7 +104,11 @@ def db_ping() -> None:
     try:
         version = db.ping()
     except Exception as exc:  # noqa: BLE001
-        _fail(f"cannot reach PostgreSQL at {get_settings().database_url}: {exc}")
+        _fail(
+            f"cannot reach PostgreSQL at {get_settings().database_url}\n"
+            + DB_DOWN_HELP
+            + f"\n  [{type(exc).__name__}]"
+        )
 
     console.print(version)
     health = schema_health()
@@ -160,6 +182,13 @@ def sync_cmd(
     no_git: Annotated[
         bool, typer.Option("--no-git", help="Skip clone/fetch (GitHub only).")
     ] = False,
+    backfill_pages: Annotated[
+        int,
+        typer.Option(
+            "--backfill-pages",
+            help="Also walk N more pages of older discussions; resumes where it stopped.",
+        ),
+    ] = 0,
     as_json: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
     """Sync a repository into the local spine. Safe to re-run and to interrupt."""
@@ -175,6 +204,7 @@ def sync_cmd(
         max_discussions=max_discussions,
         include_docs=not no_docs,
         include_git=not no_git,
+        backfill_pages=backfill_pages,
         progress=lambda msg: console.print(f"[dim]{msg}[/dim]"),
     )
 

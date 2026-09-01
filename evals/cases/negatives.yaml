@@ -1,10 +1,17 @@
-# Negative controls: real-sounding failures that have nothing to do with this
-# repository, plus distractors built only from words the corpus is full of
-# ("startup", "config", "plugin", "windows", "preload", "session").
+# Negative controls.
 #
-# Passing means abstaining: no incident match, no version action, no claims that
-# cite evidence the system does not have.
-version: 1
+# Two kinds live here:
+#
+# * unrelated failures - real, well-known problems from other domains;
+# * near misses - failures that *sound* like the loader/client incident but state
+#   a different mechanism (CSP, YAML, DNS), plus pure distractors built only from
+#   words this corpus is full of ("startup", "config", "plugin", "windows",
+#   "preload", "session").
+#
+# Passing means: no `accepted_same_incident`, no version action, no claim that
+# cites evidence the system does not have. A candidate may still be *considered*;
+# it must not surface as a matched incident.
+version: 2
 repo: deepseek-ai/deepseek-harness
 
 defaults:
@@ -14,10 +21,57 @@ defaults:
 
 expect_all:
   action_in: [abstain, collect_more_info]
-  forbid_actions: [upgrade, downgrade, migrate, config_change]
+  forbid_actions: [upgrade, downgrade, migrate, config_change, workaround]
+  no_incident_match: true
   no_unsupported_claims: true
 
 cases:
+  # --- near misses: same surface, different stated mechanism ---------------
+  - id: neg-csp-blocks-client-js
+    domain: near-miss / browser policy
+    note: >
+      The browser really did refuse the same client.js the loader incident is
+      about - but because of a Content-Security-Policy directive, which is a
+      different mechanism entirely.
+    error: >
+      The browser refused to load @deepseek-ai/dsh-client-modules/client.js because it violates
+      the following Content Security Policy directive: script-src 'self'. The page renders blank
+      and __DSH_BOOT__ is never populated.
+
+  - id: neg-yaml-duplicate-key
+    domain: near-miss / config parse
+    error: >
+      dsh web fails to start on Windows: cordis.yml could not be parsed, duplicate key 'plugins'
+      found at line 12 while parsing a block mapping. No plugins are loaded and the client shows
+      nothing.
+
+  - id: neg-dns-registry-failure
+    domain: near-miss / package install
+    error: >
+      npm ERR! code EAI_AGAIN  getaddrinfo EAI_AGAIN registry.npmjs.org - installing
+      @deepseek-ai/dsh fails, so dsh web never starts.
+
+  - id: neg-distractor-generic-words
+    domain: distractor
+    note: >
+      Every word is common in the corpus. Nothing identifies a specific fault, so
+      a system matching on topical similarity fails this case.
+    error: >
+      startup failed due to a config error on windows with a plugin enabled; the server did not
+      start and the log shows a preload warning
+
+  - id: neg-distractor-yaml-plugin-client
+    domain: distractor
+    error: >
+      Windows web startup error: plugin config failed to load a client module after parsing YAML
+
+  - id: neg-distractor-session-restart
+    domain: distractor
+    error: >
+      session error after restart: the client shows an empty screen and the host logs a warning
+      during startup
+
+  # --- unrelated domains ---------------------------------------------------
   - id: neg-postgres-connection
     domain: database
     error: "PostgreSQL startup failed: connection refused at 127.0.0.1:5432 while applying migrations"
@@ -25,6 +79,10 @@ cases:
   - id: neg-mysql-access-denied
     domain: database
     error: "ERROR 1045 (28000): Access denied for user 'app'@'10.0.0.4' (using password: YES)"
+
+  - id: neg-mongo-topology
+    domain: database
+    error: "MongoServerSelectionError: connection timed out; topology description: ReplicaSetNoPrimary"
 
   - id: neg-oauth-invalid-grant
     domain: authentication
@@ -34,17 +92,21 @@ cases:
     domain: authentication
     error: "JsonWebTokenError: jwt expired at verification time; refresh flow returned 401 Unauthorized"
 
+  - id: neg-saml-assertion
+    domain: authentication
+    error: "SAML assertion rejected: audience restriction does not match the configured entity id"
+
   - id: neg-proxy-timeout
     domain: networking
     error: "curl: (7) Failed to connect to proxy.internal port 8080: Connection timed out"
 
-  - id: neg-dns-resolution
-    domain: networking
-    error: "getaddrinfo EAI_AGAIN registry.example.com: temporary failure in name resolution"
-
   - id: neg-tls-issuer
     domain: networking
     error: "SSL certificate problem: unable to get local issuer certificate while cloning the repository"
+
+  - id: neg-websocket-handshake
+    domain: networking
+    error: "WebSocket handshake failed: unexpected response code 502 from the reverse proxy"
 
   - id: neg-docker-port-binding
     domain: infrastructure
@@ -62,6 +124,18 @@ cases:
     domain: infrastructure
     error: "ENOSPC: no space left on device, write to /var/lib/data/spool"
 
+  - id: neg-port-in-use
+    domain: infrastructure
+    error: "Error: listen EADDRINUSE: address already in use 0.0.0.0:8080"
+
+  - id: neg-file-permission
+    domain: permissions
+    error: "EACCES: permission denied, open '/etc/app/secrets.conf' while writing the runtime profile"
+
+  - id: neg-cuda-out-of-memory
+    domain: gpu / ml runtime
+    error: "torch.cuda.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 GiB on device 0"
+
   - id: neg-python-missing-module
     domain: unrelated toolchain
     error: "ModuleNotFoundError: No module named 'pandas' when running the nightly analytics job"
@@ -70,14 +144,6 @@ cases:
     domain: unrelated plugin
     error: "eslint-plugin-import: Unable to resolve path to module '@company/design-tokens' in .eslintrc.cjs"
 
-  - id: neg-distractor-generic-words
-    domain: distractor
-    note: >
-      Every word here is common in the corpus (startup, config, plugin, windows,
-      preload, server). Nothing identifies a specific fault, so a system that
-      matches on topical similarity will fail this case.
-    error: "startup failed due to a config error on windows with a plugin enabled; the server did not start and the log shows a preload warning"
-
-  - id: neg-distractor-session-words
-    domain: distractor
-    error: "session error after restart: the client shows an empty screen and the host logs a warning during startup"
+  - id: neg-terraform-state-lock
+    domain: unrelated toolchain
+    error: "Error acquiring the state lock: ConditionalCheckFailedException - another apply is in progress"

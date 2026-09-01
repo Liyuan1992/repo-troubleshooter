@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     discussion_page_size: int = Field(default=50, ge=1, le=100)
     # 0 means "no cap": walk until the incremental watermark is reached.
     max_discussions_per_run: int = 0
+    # Keep the interactive failure path under a few seconds.
+    db_connect_timeout_seconds: int = 3
     http_timeout_seconds: float = 60.0
     http_max_retries: int = 5
 

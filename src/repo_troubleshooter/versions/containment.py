@@ -52,7 +52,7 @@ class ContainmentResult:
         }
 
 
-def _release_sort_key(release: Release) -> tuple:
+def _release_sort_key(release: Release) -> tuple[int, bool, Any, Any]:
     key = semver.sort_key(release.version_norm or release.tag_name)
     published = release.published_at
     return (key[0], key[1] is None, key[1], published or release.observed_at)
@@ -67,7 +67,10 @@ def compute_containment(
     persist: bool = True,
 ) -> ContainmentResult:
     """Evaluate a commit against every known release of the repository."""
-    git = git or GitRepo(repo.clone_path)
+    if git is None:
+        if not repo.clone_path:
+            raise ValueError(f"{repo.full_name} has no local mirror; run a sync first")
+        git = GitRepo(repo.clone_path)
     resolved = git.resolve_ref(commit_sha)
     result = ContainmentResult(commit_sha=commit_sha, resolved_sha=resolved)
     releases = list(

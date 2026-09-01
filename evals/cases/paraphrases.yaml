@@ -1,0 +1,81 @@
+# Paraphrase recall.
+#
+# The independent test found the product safe but deaf: strip the exact error
+# tokens and keep only the business meaning, and a real incident was missed.
+# These queries are hand-written rewrites - no pasted stack trace, no symbol
+# names, no package paths - and they must still reach the same incident and then
+# still pass the version and applicability gates.
+#
+# They are also the guard against over-correcting: the last two entries are
+# rewrites of a *different* problem, and must not reach the loader incident.
+version: 1
+repo: deepseek-ai/deepseek-harness
+
+defaults:
+  core_version: 0.1.2-alpha.1
+  runtime: node 24.11.1
+  os: windows
+
+cases:
+  - id: para-boot-graph-plain-english
+    target_discussion: 5084
+    note: The wording from the independent test report, unchanged.
+    error: >
+      The Harness web page starts on Windows but the client boot graph has no entries or batches,
+      and the browser never preloads the dsh client JavaScript module.
+    expect:
+      matched_discussion: 5084
+      action: upgrade
+      target: dsh-v0.1.2-alpha.2
+
+  - id: para-boot-graph-user-voice
+    target_discussion: 5084
+    known_gap: true
+    note: >
+      A measured recall limit, kept in the suite on purpose. This rewrite shares
+      no vocabulary at all with the thread - "startup list" for entries/batches,
+      "fetches" for preloads - so exactly one behavioural feature overlaps and
+      the identity gate correctly refuses to call it the same incident on that.
+      Closing it needs a semantic candidate channel with its own calibrated
+      acceptance gate; lowering the identity threshold instead would trade this
+      one recall for false matches, which is the wrong trade.
+      Observed: no match, abstain, no unsafe action.
+    error: >
+      I start the web interface and get a blank page. Nothing from the client side is loaded at
+      all - the startup list the server builds comes out empty, and the browser never fetches the
+      client script it is supposed to load first.
+    expect:
+      matched_discussion: 5084
+      action_in: [upgrade, collect_more_info]
+
+  - id: para-boot-graph-newer-version
+    target_discussion: 5084
+    note: Same paraphrase, but the user is already past the fix.
+    core_version: 0.1.2-alpha.3
+    error: >
+      The Harness web page starts on Windows but the client boot graph has no entries or batches,
+      and the browser never preloads the dsh client JavaScript module.
+    expect:
+      action_in: [collect_more_info, abstain]
+      forbid_actions: [upgrade]
+      rationale_mentions: already contains
+
+  - id: para-negative-different-problem
+    note: >
+      A paraphrase of an unrelated failure. Recall improvements must not turn
+      into a matching machine for anything about "web" and "startup".
+    error: >
+      The web interface will not come up because the process cannot bind its port - something else
+      on this machine is already listening there.
+    expect:
+      no_incident_match: true
+      forbid_actions: [upgrade, downgrade, migrate, config_change, workaround]
+
+  - id: para-negative-plain-english-csp
+    note: The CSP near-miss, written without any of the usual header vocabulary.
+    error: >
+      The page loads but the browser blocks the client script for security reasons, so nothing
+      renders. Our security policy header only allows scripts from our own origin.
+    expect:
+      no_incident_match: true
+      forbid_actions: [upgrade, downgrade, migrate, config_change, workaround]

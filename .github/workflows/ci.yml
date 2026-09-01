@@ -55,6 +55,9 @@ jobs:
       - name: Formatting
         run: uv run ruff format --check .
 
+      - name: Types (strict)
+        run: uv run mypy src
+
       - name: Unit tests (no database, no network)
         run: uv run pytest -q -m "not db and not live"
 
@@ -73,6 +76,8 @@ jobs:
           /tmp/wheelcheck/bin/pip install --quiet dist/*.whl
           /tmp/wheelcheck/bin/repo-troubleshooter --help
           /tmp/wheelcheck/bin/repo-troubleshooter diagnose --help
+          /tmp/wheelcheck/bin/repo-troubleshooter-mcp --help
+          /tmp/wheelcheck/bin/repo-troubleshooter-mcp --check
 
       # The `live` suite needs synced upstream data and a GitHub token, so it is
       # not part of the default run. Enable it deliberately, not by accident.

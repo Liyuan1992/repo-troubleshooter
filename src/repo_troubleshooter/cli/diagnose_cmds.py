@@ -7,8 +7,9 @@ is the whole public surface a caller (or an evaluator) exercises.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, NoReturn
 
 import typer
 from rich.console import Console
@@ -98,7 +99,12 @@ def render(response: DiagnosisResponse, console: Console, trace: Any = None) -> 
         console.print_json(json.dumps(trace.to_json()))
 
 
-def register(app: typer.Typer, console: Console, require_schema, fail) -> None:  # noqa: ANN001
+def register(
+    app: typer.Typer,
+    console: Console,
+    require_schema: Callable[[], None],
+    fail: Callable[[str], NoReturn],
+) -> None:
     @app.command("diagnose")
     def diagnose_cmd(
         repo: Annotated[str, typer.Option("--repo", help="owner/name")],
@@ -210,6 +216,33 @@ def register(app: typer.Typer, console: Console, require_schema, fail) -> None: 
         if payload.get("excerpt"):
             console.print()
             console.print(f"[dim]{payload['excerpt']}[/dim]")
+
+    @app.command("signatures")
+    def signatures_cmd(
+        repo: Annotated[str, typer.Argument(help="owner/name")],
+        rebuild: Annotated[
+            bool, typer.Option("--rebuild", help="Delete and re-mine every signature.")
+        ] = False,
+    ) -> None:
+        """Mine symptom signatures from stored threads (sync does this too)."""
+        require_schema()
+
+        from repo_troubleshooter.relations.signatures import build_for_repository
+
+        with db.session_scope() as session:
+            repository = get_repository(session, repo)
+            if repository is None:
+                fail(f"{repo} is not synced yet")
+            stats = build_for_repository(
+                session,
+                repository,
+                rebuild=rebuild,
+                progress=lambda message: console.print(f"[dim]{message}[/dim]"),
+            )
+        table = Table("metric", "value")
+        for key, value in stats.to_json().items():
+            table.add_row(key, str(value))
+        console.print(table)
 
     @app.command("incidents")
     def incidents_cmd(

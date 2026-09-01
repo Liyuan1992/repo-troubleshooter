@@ -76,11 +76,12 @@ class GitRepo:
     _FS = "\x1f"
     _RS = "\x1e"
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
-        self._git = shutil.which("git")
-        if not self._git:
+        git = shutil.which("git")
+        if not git:
             raise GitError(["--version"], 127, "git executable not found on PATH")
+        self._git: str = git
 
     # --- process plumbing -------------------------------------------------
 
@@ -106,7 +107,7 @@ class GitRepo:
         return (self.path / "HEAD").exists() or (self.path / ".git").exists()
 
     @classmethod
-    def ensure(cls, path: Path, clone_url: str) -> GitRepo:
+    def ensure(cls, path: Path | str, clone_url: str) -> GitRepo:
         """Clone a bare mirror if missing; otherwise reuse the existing one."""
         path = Path(path)
         git = shutil.which("git")

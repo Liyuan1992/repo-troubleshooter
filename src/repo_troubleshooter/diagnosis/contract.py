@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -160,7 +160,26 @@ class RecommendedAction(BaseModel):
     evidence_ids: list[str] = Field(default_factory=list)
 
 
+class StageReport(BaseModel):
+    """The three-stage contract, made explicit in the public output.
+
+    ``retrieved_candidate`` is only "worth checking"; it never means a match.
+    ``accepted_same_incident`` is the only thing that may set
+    ``incident.matched``. ``actionable_incident`` is the only thing that may
+    produce upgrade / downgrade / config_change / workaround.
+    """
+
+    retrieved_candidates: int = 0
+    accepted_same_incident: bool = False
+    actionable_incident: bool = False
+    # Why stage 2 or stage 3 stopped, by class, with no candidate identity leaked.
+    rejected_candidates: dict[str, int] = Field(default_factory=dict)
+    stopped_at: str = "retrieved_candidate"
+
+
 class IncidentSummary(BaseModel):
+    """Populated only once `accepted_same_incident` passes."""
+
     matched: bool = False
     incident_id: str | None = None
     title: str | None = None
@@ -169,11 +188,14 @@ class IncidentSummary(BaseModel):
     matched_tokens: list[str] = Field(default_factory=list)
     score: float = 0.0
     resolution_signal: str | None = None
+    identity_rule: str | None = None
+    shared_features: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class DiagnosisResponse(BaseModel):
     status: Status
     environment: dict[str, Any] = Field(default_factory=dict)
+    stages: StageReport = Field(default_factory=StageReport)
     incident: IncidentSummary = Field(default_factory=IncidentSummary)
     applicability: dict[str, Any] = Field(default_factory=dict)
     claims: list[Claim] = Field(default_factory=list)
@@ -187,9 +209,32 @@ class DiagnosisResponse(BaseModel):
     fingerprint: dict[str, Any] = Field(default_factory=dict)
     provider: str = "deterministic"
 
+    # Actions that change what the user runs. Only stage 3 may produce these.
+    VERSION_ACTIONS: ClassVar[frozenset[str]] = frozenset(
+        {"upgrade", "downgrade", "migrate", "config_change", "workaround"}
+    )
+
     @property
     def unsupported_claims(self) -> list[Claim]:
         return [c for c in self.claims if not c.supported]
+
+    @property
+    def proposes_change(self) -> bool:
+        return self.recommended_action.type in self.VERSION_ACTIONS
+
+    def revoke_incident(self, reason: str) -> None:
+        """Withdraw the whole incident, not just one citation."""
+        self.incident = IncidentSummary(matched=False)
+        self.stages.accepted_same_incident = False
+        self.stages.actionable_incident = False
+        self.stages.stopped_at = "revoked_by_verifier"
+        self.claims = []
+        self.status = "insufficient_evidence"
+        self.recommended_action = RecommendedAction(
+            type="collect_more_info", rationale=reason, confidence="low"
+        )
+        if reason not in self.missing_information:
+            self.missing_information.append(reason)
 
     def to_json(self) -> dict[str, Any]:
         return self.model_dump(mode="json")

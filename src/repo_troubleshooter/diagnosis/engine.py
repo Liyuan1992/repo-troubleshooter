@@ -31,12 +31,14 @@ from repo_troubleshooter.diagnosis.contract import (
     DiagnosisResponse,
     IncidentSummary,
     RecommendedAction,
+    StageReport,
 )
 from repo_troubleshooter.evidence import packet as ev
 from repo_troubleshooter.evidence.packet import EvidencePacket
+from repo_troubleshooter.fingerprint import features as feat
 from repo_troubleshooter.fingerprint.error import ErrorFingerprint, fingerprint
 from repo_troubleshooter.relations.change_resolution import ChangeCandidate, resolve_change
-from repo_troubleshooter.retrieval import candidates as retrieval
+from repo_troubleshooter.retrieval import pipeline
 from repo_troubleshooter.store.models import (
     ContentUnit,
     GitCommit,
@@ -63,6 +65,7 @@ class DiagnosisDebug:
     """Everything needed to reproduce one query (spec section 41)."""
 
     fingerprint: dict[str, Any] = field(default_factory=dict)
+    features: dict[str, Any] = field(default_factory=dict)
     retrieval: dict[str, Any] = field(default_factory=dict)
     change: dict[str, Any] | None = None
     containment: dict[str, Any] | None = None
@@ -73,6 +76,7 @@ class DiagnosisDebug:
     def to_json(self) -> dict[str, Any]:
         return {
             "fingerprint": self.fingerprint,
+            "features": self.features,
             "retrieval": self.retrieval,
             "change": self.change,
             "containment": self.containment,
@@ -222,7 +226,9 @@ def diagnose(
     runtime_name, runtime_version = request.runtime_name_version()
 
     fp = fingerprint(request.error, extra_context=request.question)
+    query_features = feat.extract(chr(10).join(p for p in (request.error, request.question) if p))
     debug.fingerprint = fp.to_json()
+    debug.features = query_features.to_json()
 
     base = DiagnosisResponse(
         status="insufficient_evidence",
@@ -234,48 +240,81 @@ def diagnose(
         fingerprint=fp.to_json(),
     )
 
-    if fp.is_empty:
+    if fp.is_empty and query_features.is_empty():
         base.recommended_action = RecommendedAction(
             type="collect_more_info", rationale="no error text or question was supplied"
         )
         base.missing_information = ["the exact error message or symptom"]
         return base, packet, debug
 
-    # --- retrieval ---------------------------------------------------------
-    result = retrieval.search(session, repo_id=repo.id, fingerprint=fp, limit=5)
-    debug.retrieval = result.to_json()
+    # --- stage 1: retrieved_candidate, stage 2: accepted_same_incident -----
+    outcome = pipeline.retrieve_and_identify(
+        session, repo_id=repo.id, fingerprint=fp, features=query_features
+    )
+    debug.retrieval = outcome.to_json()
 
-    if not result.hits:
-        best = result.rejected[0] if result.rejected else None
+    rejected_by_class: dict[str, int] = {}
+    for rejection in outcome.rejections:
+        key = rejection.get("rejection") or "not_evaluated"
+        rejected_by_class[key] = rejected_by_class.get(key, 0) + 1
+
+    base.stages = StageReport(
+        retrieved_candidates=len(outcome.candidates),
+        accepted_same_incident=outcome.accepted is not None,
+        actionable_incident=False,
+        rejected_candidates=rejected_by_class,
+        stopped_at="retrieved_candidate",
+    )
+
+    if outcome.accepted is None:
+        # Candidates may exist; none of them is the same problem. Nothing about
+        # them reaches the public output - counts only, no identity.
+        why = ""
+        if "different_root_cause" in rejected_by_class:
+            why = (
+                "; candidates were rejected because this report states a different "
+                "failure mechanism"
+            )
+        elif rejected_by_class:
+            why = "; candidates shared wording but not identifying evidence"
         base.recommended_action = RecommendedAction(
             type="abstain",
-            rationale=(
-                "no stored incident matches this error above the evidence threshold"
-                + (f"; closest candidate rejected because {best.rejection_reason}" if best else "")
-            ),
+            rationale=("no stored incident is the same problem as this report" + why),
         )
         base.missing_information = [
             "whether this symptom has been reported upstream for this repository",
         ]
+        if outcome.notes:
+            base.coverage_notes = [*base.coverage_notes, *outcome.notes]
         if sync_health != "complete":
             base.missing_information.append(
                 "coverage is partial, so absence of a match is not proof of absence"
             )
         return base, packet, debug
 
-    top = result.hits[0]
+    top = outcome.accepted
     symptom_obj = session.get(SourceObject, top.object_id)
+    if symptom_obj is None:  # pragma: no cover - retrieval returned a stale id
+        base.recommended_action = RecommendedAction(
+            type="abstain",
+            rationale="the matched thread is no longer present in the local store",
+        )
+        base.missing_information = ["re-run `rt sync` so the evidence store is current"]
+        return base, packet, debug
     symptom_item = ev.from_source_object(session, symptom_obj, role="symptom")
     symptom_id = packet.add(symptom_item)
 
+    identity = top.identity
     incident = IncidentSummary(
         matched=True,
         title=symptom_obj.title,
         url=symptom_obj.url,
-        symptom_signature=fp.signature[:400],
-        matched_tokens=top.matched_tokens[:10],
-        score=round(top.score, 2),
+        symptom_signature=fp.signature[:400] or None,
+        matched_tokens=top.token_matched[:10],
+        score=round(identity.score, 2) if identity else 0.0,
         resolution_signal=symptom_obj.state,
+        identity_rule=identity.rule if identity else None,
+        shared_features={k: v[:6] for k, v in (identity.shared if identity else {}).items() if v},
     )
 
     symptom_text = _object_text(session, symptom_obj.id)
@@ -372,7 +411,7 @@ def diagnose(
         Claim(
             type="symptom_match",
             value=f"matches {symptom_obj.kind} #{symptom_obj.number}: {symptom_obj.title}",
-            confidence="high" if top.score >= 25 else "medium",
+            confidence="high" if (identity and identity.score >= 12) else "medium",
             basis="observed",
             evidence_ids=[symptom_id],
         )
@@ -450,7 +489,7 @@ def diagnose(
         missing.append("a resolvable core version (a release tag or semantic version)")
 
     elif containment is None or not containment.first_release_containing:
-        status = "probable" if top.score >= 25 else "insufficient_evidence"
+        status = "probable" if (identity and identity.score >= 12) else "insufficient_evidence"
         action = RecommendedAction(
             type="collect_more_info",
             rationale=(
@@ -530,9 +569,22 @@ def diagnose(
         status = "conflicting"
         action.confidence = "low"
 
+    stages = StageReport(
+        retrieved_candidates=len(outcome.candidates),
+        accepted_same_incident=True,
+        actionable_incident=action.type in DiagnosisResponse.VERSION_ACTIONS,
+        rejected_candidates=rejected_by_class,
+        stopped_at=(
+            "actionable_incident"
+            if action.type in DiagnosisResponse.VERSION_ACTIONS
+            else "accepted_same_incident"
+        ),
+    )
+
     response = DiagnosisResponse(
         status=status,  # type: ignore[arg-type]
         environment=environment,
+        stages=stages,
         incident=incident,
         applicability=verdict.to_json(),
         claims=claims,

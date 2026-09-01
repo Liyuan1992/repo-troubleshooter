@@ -1,9 +1,9 @@
-# Version and environment perturbations on one verified incident.
+# Version, runtime and OS perturbations on one verified incident.
 #
 # The point of the whole project: only the environment changes, and the answer
-# has to change with it. A system that recommends the same upgrade in every row
-# is doing semantic pattern matching, not version-aware troubleshooting.
-version: 1
+# must change with it. A system that recommends the same upgrade in every row is
+# doing semantic pattern matching, not version-aware troubleshooting.
+version: 2
 repo: deepseek-ai/deepseek-harness
 
 base_query:
@@ -16,11 +16,18 @@ base_query:
   runtime: node 24.11.1
   os: windows
 
-# The change is first contained in this release (checked upstream, and
-# re-derived by git ancestry at query time).
+# The change is first contained in this release (checked upstream, and re-derived
+# by git ancestry at query time).
 first_release_containing: dsh-v0.1.2-alpha.2
 
 cases:
+  - id: pert-much-older-release
+    label: several releases behind
+    core_version: 0.1.0-rc.7
+    expect:
+      action: upgrade
+      target: dsh-v0.1.2-alpha.2
+
   - id: pert-older-release
     label: older than the first containing release
     core_version: 0.1.1-rc.2
@@ -51,6 +58,14 @@ cases:
       forbid_actions: [upgrade]
       rationale_mentions: already contains
 
+  - id: pert-far-future-release
+    label: a version far beyond anything released
+    core_version: 9.9.9
+    expect:
+      action_in: [collect_more_info, abstain]
+      forbid_actions: [upgrade]
+      rationale_mentions: already contains
+
   - id: pert-missing-version
     label: no version supplied at all
     core_version: null
@@ -66,11 +81,19 @@ cases:
       forbid_actions: [upgrade]
       applicability: unresolved_version
       note: >
-        The token contains 2026, which is numerically larger than any release.
-        Reading it as a newer version would be a silent, confident error.
+        The token contains 2026, numerically larger than any release. Reading it
+        as a newer version would be a silent, confident error.
 
-  - id: pert-runtime-contradiction
-    label: a runtime outside the incident's stated range
+  - id: pert-unparseable-branch-name
+    label: a branch name instead of a version
+    core_version: main
+    expect:
+      action_in: [collect_more_info, abstain]
+      forbid_actions: [upgrade]
+      applicability: unresolved_version
+
+  - id: pert-runtime-below-range
+    label: a runtime below the incident's stated range
     core_version: 0.1.2-alpha.1
     runtime: node 22.19.0
     expect:
@@ -78,6 +101,18 @@ cases:
       forbid_actions: [upgrade]
       applicability: hard_contradiction
       expect_conflicts: true
+
+  - id: pert-runtime-above-range
+    label: a runtime above the incident's stated range
+    core_version: 0.1.2-alpha.1
+    runtime: node 24.12.0
+    expect:
+      action_in: [collect_more_info, abstain]
+      forbid_actions: [upgrade]
+      expect_conflicts: true
+      note: >
+        24.12.0 is outside the stated 24.0-24.11.1 window. The incident may still
+        be related, but it is not established for this runtime.
 
   - id: pert-runtime-inside-range
     label: a different runtime version inside the stated range
@@ -87,6 +122,16 @@ cases:
       action: upgrade
       target: dsh-v0.1.2-alpha.2
 
+  - id: pert-runtime-unparseable
+    label: a runtime string that cannot be ordered
+    core_version: 0.1.2-alpha.1
+    runtime: node nightly
+    expect:
+      forbid_actions: [downgrade]
+      note: >
+        An unparseable runtime must not be silently treated as inside the range;
+        it may only weaken the verdict, never strengthen it.
+
   - id: pert-other-os
     label: same incident reported on a different OS
     core_version: 0.1.2-alpha.1
@@ -95,5 +140,16 @@ cases:
       action_in: [upgrade, collect_more_info]
       note: >
         The incident was reported on Windows. A different OS is weaker evidence,
-        not a contradiction, so either answer is acceptable - but the OS mismatch
-        must show up in the applicability reasoning.
+        not a contradiction, so either answer is acceptable - but the mismatch
+        must appear in the applicability reasoning.
+
+  - id: pert-unsynced-repository
+    label: a repository this instance has never synced
+    repo: nobody/not-synced
+    core_version: 0.1.2-alpha.1
+    expect:
+      action_in: [collect_more_info, abstain]
+      forbid_actions: [upgrade]
+      no_incident_match: true
+      note: >
+        Evidence from one repository must never be borrowed for another.

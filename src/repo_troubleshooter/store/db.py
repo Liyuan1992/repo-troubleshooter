@@ -16,7 +16,21 @@ REQUIRED_EXTENSIONS = ("pg_trgm", "vector")
 
 @lru_cache(maxsize=1)
 def get_engine() -> Engine:
-    return create_engine(get_settings().database_url, pool_pre_ping=True, future=True)
+    """One engine, with a short connect timeout.
+
+    An interactive CLI must fail fast and say what to do: waiting 30 seconds on
+    a database that is not running is worse than an immediate, actionable error.
+    """
+    settings = get_settings()
+    connect_args: dict[str, object] = {}
+    if settings.database_url.startswith("postgresql"):
+        connect_args["connect_timeout"] = settings.db_connect_timeout_seconds
+    return create_engine(
+        settings.database_url,
+        pool_pre_ping=True,
+        future=True,
+        connect_args=connect_args,
+    )
 
 
 @lru_cache(maxsize=1)
@@ -50,4 +64,4 @@ def ensure_extensions(engine: Engine | None = None) -> list[str]:
 
 def ping() -> str:
     with get_engine().connect() as conn:
-        return conn.execute(text("SELECT version()")).scalar_one()
+        return str(conn.execute(text("SELECT version()")).scalar_one())

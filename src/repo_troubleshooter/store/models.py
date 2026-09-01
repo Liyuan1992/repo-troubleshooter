@@ -423,3 +423,41 @@ class IncidentResolutionRecord(Base):
         ),
         Index("ix_incident_repo", "repo_id", "incident_key"),
     )
+
+
+class SymptomSignature(Base):
+    """A feature mined from one source object's own text.
+
+    Signatures exist so a paraphrase can still find the incident: a reporter who
+    writes "the boot graph has no entries" and one who pastes the exact global
+    name share behavioural features even when they share no tokens.
+
+    Every row is derived from real upstream text - there is no hand-written
+    alias list - and ``derivation`` records that.
+    """
+
+    __tablename__ = "symptom_signature"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    repo_id: Mapped[int] = mapped_column(
+        ForeignKey("repository.id", ondelete="CASCADE"), nullable=False
+    )
+    object_id: Mapped[int] = mapped_column(
+        ForeignKey("source_object.id", ondelete="CASCADE"), nullable=False
+    )
+    # error | structural | behavior | component | cause
+    feature_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    feature_value: Mapped[str] = mapped_column(String(300), nullable=False)
+    # Which source text produced it: the thread body, a comment, a release note.
+    derivation: Mapped[str] = mapped_column(String(32), default="mined", nullable=False)
+    observed_at = _utcnow_col()
+
+    __table_args__ = (
+        UniqueConstraint("object_id", "feature_kind", "feature_value", name="uq_symptom_signature"),
+        Index("ix_symptom_signature_lookup", "repo_id", "feature_kind", "feature_value"),
+        Index("ix_symptom_signature_object", "object_id"),
+        CheckConstraint(
+            "feature_kind IN ('error','structural','behavior','component','cause')",
+            name="ck_symptom_signature_kind",
+        ),
+    )

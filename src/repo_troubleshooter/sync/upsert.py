@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-from typing import Any
+from typing import Any, TypeVar
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -28,7 +28,17 @@ from repo_troubleshooter.store.models import (
     SyncState,
 )
 
+_T = TypeVar("_T")
+
 NUL = chr(0)
+
+
+def _fetch(session: Session, model: type[_T], row_id: int) -> _T:
+    """Re-read a row we just wrote. A missing row here is a real bug, not a None."""
+    row = session.get(model, row_id)
+    if row is None:  # pragma: no cover - would mean the write vanished
+        raise RuntimeError(f"{model.__name__} {row_id} disappeared after upsert")
+    return row
 
 
 def sanitize_text(value: str | None) -> str | None:
@@ -115,7 +125,7 @@ def upsert_source_object(
     )
     object_id = session.execute(stmt).scalar_one()
     session.flush()
-    return session.get(SourceObject, object_id)
+    return _fetch(session, SourceObject, object_id)
 
 
 def record_revision(
@@ -202,7 +212,7 @@ def upsert_release(session: Session, *, repo_id: int, tag_name: str, **fields: A
     )
     release_id = session.execute(stmt).scalar_one()
     session.flush()
-    return session.get(Release, release_id)
+    return _fetch(session, Release, release_id)
 
 
 def upsert_commit(session: Session, *, repo_id: int, sha: str, **fields: Any) -> GitCommit:
@@ -218,7 +228,7 @@ def upsert_commit(session: Session, *, repo_id: int, sha: str, **fields: Any) ->
     )
     commit_id = session.execute(stmt).scalar_one()
     session.flush()
-    return session.get(GitCommit, commit_id)
+    return _fetch(session, GitCommit, commit_id)
 
 
 def upsert_containment(
@@ -253,7 +263,7 @@ def upsert_containment(
     )
     row_id = session.execute(stmt).scalar_one()
     session.flush()
-    return session.get(ReleaseContainment, row_id)
+    return _fetch(session, ReleaseContainment, row_id)
 
 
 # --- relations --------------------------------------------------------------

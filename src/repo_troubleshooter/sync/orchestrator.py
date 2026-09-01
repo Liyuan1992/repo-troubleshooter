@@ -29,6 +29,7 @@ from repo_troubleshooter.connectors.github.probe import RepoSurfaces, probe_repo
 from repo_troubleshooter.connectors.github.releases import iter_releases
 from repo_troubleshooter.profiles.loader import RepoProfile
 from repo_troubleshooter.relations.extract import extract_references
+from repo_troubleshooter.relations.signatures import build_for_repository
 from repo_troubleshooter.store.db import session_scope
 from repo_troubleshooter.store.models import Release, Repository, SourceObject
 from repo_troubleshooter.sync import upsert
@@ -137,6 +138,14 @@ def _doc_excluded(path: str, profile: RepoProfile) -> bool:
     if Path(path).suffix.lower() not in TEXT_DOC_SUFFIXES:
         return True  # images, fonts and binary fixtures are not evidence
     return any(re.search(pattern, path) for pattern in profile.docs.exclude_patterns)
+
+
+def _require_repository(session: Session, repo_id: int) -> Repository:
+    """The repository row we just wrote must still be there."""
+    repo = session.get(Repository, repo_id)
+    if repo is None:  # pragma: no cover - would mean the row vanished mid-sync
+        raise RuntimeError(f"repository {repo_id} disappeared during sync")
+    return repo
 
 
 def clone_path_for(profile: RepoProfile, settings: Settings) -> Path:
@@ -622,6 +631,8 @@ def resolve_referenced_commits(
         resolved = 0
         unknown = 0
         for ref in refs:
+            if not ref:
+                continue
             sha = ref.split(":", 1)[1]
             info = git.commit_info(sha)
             if info is None:
@@ -675,6 +686,143 @@ def resolve_referenced_commits(
     return report
 
 
+def backfill_discussions(
+    session: Session,
+    repo: Repository,
+    profile: RepoProfile,
+    client: GitHubClient,
+    surfaces: RepoSurfaces,
+    *,
+    settings: Settings,
+    page_budget: int = 4,
+    categories: list[str] | None = None,
+    progress: ProgressFn = _noop,
+) -> SourceReport:
+    """Walk older discussions a few pages at a time, resuming where it stopped.
+
+    The incremental sync only ever reaches back to its watermark. This walks
+    forward through history instead, storing the GraphQL cursor after every page
+    so an interrupted run resumes rather than restarts. It never bypasses the
+    rate limit: the page budget is the whole point, and a run that stops with
+    pages remaining reports `degraded`, never `complete`.
+    """
+    source = "discussions_backfill"
+    report = SourceReport(source=source)
+    started = time.monotonic()
+    state = upsert.mark_sync_start(session, repo.id, source)
+    stats = dict(state.stats or {})
+    cursor: str | None = stats.get("cursor")
+    exhausted = bool(stats.get("exhausted"))
+
+    if exhausted:
+        report.status = "complete"
+        report.detail = {"exhausted": True, "pages_this_run": 0}
+        upsert.mark_sync_success(session, repo.id, source, stats=stats)
+        report.duration_s = time.monotonic() - started
+        progress("backfill: already exhausted; nothing older to fetch")
+        return report
+
+    wanted = categories or surfaces.answerable_categories()
+    category_ids = [
+        c["id"] for c in surfaces.discussion_categories if not wanted or c["name"] in wanted
+    ] or [None]
+
+    pages_seen = 0
+    last_cursor: str | None = cursor
+    reached_end = False
+
+    def record_page(end_cursor: str | None, pages: int) -> None:
+        nonlocal last_cursor, pages_seen, reached_end
+        pages_seen = pages
+        if end_cursor is None:
+            reached_end = True
+        else:
+            last_cursor = end_cursor
+
+    try:
+        for category_id in category_ids:
+            for discussion in iter_discussions(
+                client,
+                profile.owner,
+                profile.name,
+                page_size=settings.discussion_page_size,
+                comments_per_page=20,
+                replies_per_comment=5,
+                category_id=category_id,
+                start_cursor=cursor,
+                page_budget=page_budget,
+                on_page=record_page,
+            ):
+                objects, changed = _ingest_discussion(session, repo, discussion)
+                report.objects += objects
+                report.changed += changed
+            if reached_end:
+                break
+
+        session.flush()
+        stats.update(
+            {
+                "cursor": None if reached_end else last_cursor,
+                "exhausted": reached_end,
+                "pages_last_run": pages_seen,
+                "page_budget": page_budget,
+                "categories": wanted or ["<all>"],
+            }
+        )
+        report.status = "complete" if reached_end else "degraded"
+        report.detail = stats
+        upsert.mark_sync_success(
+            session,
+            repo.id,
+            source,
+            objects_seen=report.objects,
+            status="complete" if reached_end else "degraded",
+            stats=stats,
+        )
+        progress(
+            f"backfill: {pages_seen} page(s), {report.objects} objects"
+            + (" - history exhausted" if reached_end else " - more remain")
+        )
+    except Exception as exc:  # noqa: BLE001
+        report.status = "failed"
+        report.error = str(exc)
+        session.rollback()
+        upsert.mark_sync_failure(session, repo.id, source, str(exc))
+        session.commit()
+        progress(f"backfill: FAILED {exc}")
+
+    report.duration_s = time.monotonic() - started
+    return report
+
+
+def build_signatures(
+    session: Session, repo: Repository, *, progress: ProgressFn = _noop
+) -> SourceReport:
+    """Mine symptom signatures for everything currently stored."""
+    report = SourceReport(source="signatures")
+    started = time.monotonic()
+    upsert.mark_sync_start(session, repo.id, "signatures")
+    try:
+        stats = build_for_repository(session, repo, progress=progress)
+        report.objects = stats.objects
+        report.changed = stats.rows_written
+        report.detail = stats.to_json()
+        report.status = "complete"
+        upsert.mark_sync_success(
+            session, repo.id, "signatures", objects_seen=stats.objects, stats=stats.to_json()
+        )
+        progress(f"signatures: {stats.objects} objects, {stats.rows_written} features")
+    except Exception as exc:  # noqa: BLE001
+        report.status = "failed"
+        report.error = str(exc)
+        session.rollback()
+        upsert.mark_sync_failure(session, repo.id, "signatures", str(exc))
+        session.commit()
+        progress(f"signatures: FAILED {exc}")
+    report.duration_s = time.monotonic() - started
+    return report
+
+
 # --- entry point ------------------------------------------------------------
 
 
@@ -686,6 +834,7 @@ def sync_repository(
     max_discussions: int | None = None,
     include_docs: bool = True,
     include_git: bool = True,
+    backfill_pages: int = 0,
     progress: ProgressFn = _noop,
 ) -> SyncReport:
     settings = settings or get_settings()
@@ -749,19 +898,19 @@ def sync_repository(
             report.sources["git"] = git_report
 
         with session_scope() as session:
-            repo = session.get(Repository, repo_id)
+            repo = _require_repository(session, repo_id)
             report.sources["releases"] = sync_releases(
                 session, repo, profile, client, git, progress=progress
             )
 
         if include_docs and git is not None:
             with session_scope() as session:
-                repo = session.get(Repository, repo_id)
+                repo = _require_repository(session, repo_id)
                 report.sources["docs"] = sync_docs(session, repo, profile, git, progress=progress)
 
         if surfaces.discussions_enabled and profile.support_surfaces.discussions is not False:
             with session_scope() as session:
-                repo = session.get(Repository, repo_id)
+                repo = _require_repository(session, repo_id)
                 report.sources["discussions"] = sync_discussions(
                     session,
                     repo,
@@ -774,12 +923,32 @@ def sync_repository(
                     progress=progress,
                 )
 
+            if backfill_pages:
+                with session_scope() as session:
+                    repo = _require_repository(session, repo_id)
+                    report.sources["discussions_backfill"] = backfill_discussions(
+                        session,
+                        repo,
+                        profile,
+                        client,
+                        surfaces,
+                        settings=settings,
+                        page_budget=backfill_pages,
+                        progress=progress,
+                    )
+
         if git is not None:
             with session_scope() as session:
-                repo = session.get(Repository, repo_id)
+                repo = _require_repository(session, repo_id)
                 report.sources["commits"] = resolve_referenced_commits(
                     session, repo, git, progress=progress
                 )
+
+        # Symptom signatures are what lets a paraphrase find an incident, so they
+        # are part of ingest, not a separate manual step.
+        with session_scope() as session:
+            repo = _require_repository(session, repo_id)
+            report.sources["signatures"] = build_signatures(session, repo, progress=progress)
 
     report.finished_at = dt.datetime.now(dt.UTC)
     return report
