@@ -77,6 +77,10 @@ class RetrievedCandidate:
     token_score: float = 0.0
     token_matched: list[str] = field(default_factory=list)
     feature_hits: dict[str, list[str]] = field(default_factory=dict)
+    # True when this candidate names a package related to the query's, per the
+    # repository's manifests. Affects ordering and the check budget only:
+    # acceptance still goes through the gate's strict relation.
+    family_related: bool = False
     identity: IdentityVerdict | None = None
 
     @property
@@ -93,6 +97,7 @@ class RetrievedCandidate:
             "token_score": round(self.token_score, 2),
             "token_matched": self.token_matched[:8],
             "feature_hits": self.feature_hits,
+            "family_related": self.family_related,
             "identity": self.identity.to_json() if self.identity else None,
         }
 
@@ -136,12 +141,23 @@ class RetrievalOutcome:
 
 
 def _feature_channel(
-    session: Session, repo_id: int, features: SymptomFeatures
+    session: Session,
+    repo_id: int,
+    features: SymptomFeatures,
+    family: PackageFamily | None = None,
 ) -> dict[int, dict[str, list[str]]]:
     pairs: list[tuple[str, str]] = []
+
+    # A report about `@scope/dsh` should reach threads about the packages that
+    # ship inside it. Retrieval uses the loose relation deliberately: surfacing
+    # a candidate costs nothing, and the identity gate still has to accept it.
+    package_values = set(features.subject_packages) | set(features.subject_mentioned)
+    if family is not None and package_values:
+        package_values |= family.expand_for_retrieval(package_values)
+
     for kind, values in (
-        ("subject_package", features.subject_packages),
-        ("subject_mentioned", features.subject_mentioned),
+        ("subject_package", package_values),
+        ("subject_mentioned", package_values),
         ("subject_path", features.subject_paths),
         ("subject_module", features.subject_modules),
         ("error", features.error),
@@ -175,9 +191,11 @@ def retrieve(
     fingerprint: ErrorFingerprint,
     features: SymptomFeatures,
     limit: int = MAX_CANDIDATES,
+    family: PackageFamily | None = None,
 ) -> RetrievalOutcome:
     """Stage 1: gather candidates from both channels. No identity decision here."""
     outcome = RetrievalOutcome()
+    family = family if family is not None else PackageFamily.load(session, repo_id)
 
     token_result = token_channel.search(
         session, repo_id=repo_id, fingerprint=fingerprint, limit=limit
@@ -202,7 +220,7 @@ def retrieve(
             token_matched=hit.matched_tokens,
         )
 
-    feature_hits = _feature_channel(session, repo_id, features)
+    feature_hits = _feature_channel(session, repo_id, features, family)
     unknown_ids = [oid for oid in feature_hits if oid not in merged]
     meta: dict[int, Any] = {}
     if unknown_ids:
@@ -237,9 +255,26 @@ def retrieve(
             feature_hits=hits,
         )
 
+    # Mark candidates whose packages belong to the same product as the query's.
+    query_packages = set(features.subject_packages) | set(features.subject_mentioned)
+    if query_packages:
+        for candidate in merged.values():
+            package_hits: list[str] = [
+                *candidate.feature_hits.get("subject_package", []),
+                *candidate.feature_hits.get("subject_mentioned", []),
+            ]
+            if any(
+                family.related_for_retrieval(hit, name)
+                for hit in package_hits
+                for name in query_packages
+            ):
+                candidate.family_related = True
+
+    # Family-related candidates sort first, so the identity budget below cannot
+    # truncate the one incident that is actually about the same product.
     ordered = sorted(
         merged.values(),
-        key=lambda c: (-(c.token_score), -c.feature_hit_count, c.object_id),
+        key=lambda c: (not c.family_related, -(c.token_score), -c.feature_hit_count, c.object_id),
     )
     outcome.candidates = ordered[:limit]
     if not outcome.candidates:
@@ -258,6 +293,7 @@ def identify(
     query_features: SymptomFeatures,
     outcome: RetrievalOutcome,
     max_checks: int = MAX_IDENTITY_CHECKS,
+    family: PackageFamily | None = None,
 ) -> RetrievalOutcome:
     """Stage 2: decide which candidate, if any, is the *same incident*."""
     query_values = (
@@ -269,9 +305,15 @@ def identify(
     )
     doc_freq = signatures.document_frequencies(session, repo_id, query_values)
     # Which packages ship inside which, learned from the repository's manifests.
-    family = PackageFamily.load(session, repo_id)
+    family = family if family is not None else PackageFamily.load(session, repo_id)
 
-    for candidate in outcome.candidates[:max_checks]:
+    # Never let the budget drop a family-related candidate: those are exactly the
+    # ones a product relation is supposed to surface.
+    prioritised = [c for c in outcome.candidates if c.family_related]
+    remaining = [c for c in outcome.candidates if not c.family_related]
+    to_check = prioritised + remaining[: max(0, max_checks - len(prioritised))]
+
+    for candidate in to_check:
         candidate_features = signatures.load_features(session, candidate.object_id)
         candidate.identity = evaluate(
             query_features,
@@ -296,7 +338,15 @@ def retrieve_and_identify(
     features: SymptomFeatures,
     limit: int = MAX_CANDIDATES,
 ) -> RetrievalOutcome:
+    family = PackageFamily.load(session, repo_id)
     outcome = retrieve(
-        session, repo_id=repo_id, fingerprint=fingerprint, features=features, limit=limit
+        session,
+        repo_id=repo_id,
+        fingerprint=fingerprint,
+        features=features,
+        limit=limit,
+        family=family,
     )
-    return identify(session, repo_id=repo_id, query_features=features, outcome=outcome)
+    return identify(
+        session, repo_id=repo_id, query_features=features, outcome=outcome, family=family
+    )

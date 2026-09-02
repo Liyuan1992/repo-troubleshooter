@@ -237,7 +237,18 @@ def evaluate(
         )
 
     matched_runtime = False
+    if constraints.runtimes and not runtime_version:
+        # No runtime was reported. That is missing information, not an
+        # unparseable version: saying "cannot be ordered" here would blame the
+        # user's version for a gap in their report.
+        reasons.append(
+            "no runtime version was provided, so the incident's runtime bounds "
+            f"({', '.join(c.describe() for c in constraints.runtimes)}) could not be checked"
+        )
+
     for constraint in constraints.runtimes:
+        if not runtime_version:
+            continue
         if runtime_name and constraint.runtime != runtime_name:
             continue
         covered = constraint.covers(runtime_version)

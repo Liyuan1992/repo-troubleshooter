@@ -54,7 +54,7 @@ decide, all measured:
 
   | role | how it is decided | authority |
   |---|---|---|
-  | primary package | the report says it failed: `X crashes`, `X throws`, `could not resolve X` | conflict is decisive |
+  | primary package | the report says it failed: `X crashes`, `X did not load`, `could not resolve X` | conflict is decisive |
   | referenced dependency | the report says it is used: `depends on X`, `imports X`, `peer dependency X` - scoped or not | weakens a match, never refuses one |
   | mentioned package | named with no cue either way | weakens a match, never refuses one |
   | source path | `loader/src/internal.ts` | vetoes only when primary packages do not already agree |
@@ -66,13 +66,35 @@ decide, all measured:
   can never cancel a conflict between two blamed packages, and a query that
   names only dependencies cannot veto anything at all;
 
+* **negation has to name the action, and health outranks it** - a bare
+  `does not` is not evidence of anything. The negated verb must be named, and
+  which verb it is decides the meaning: negating a *failure* verb is good news
+  (`X does not crash` leaves X merely mentioned) while negating an *expected
+  action* is the failure (`X did not preload` makes X primary). An explicit
+  health cue - `is healthy`, `is not failing`, `resolved`, `fine` - outranks any
+  failure word that merely stands nearby, so `something crashed, but @scope/lib
+  is healthy` does not blame `@scope/lib`. The same reasoning fixed a cause
+  signal: `peer dependency ... is healthy` no longer counts as
+  `version_conflict`; a conflict word has to be present;
+
 * **packages that ship inside one another are not a conflict** - the product
   family is read from the repository's own `package.json` manifests at sync
-  time (275 of them here). A relation needs name ancestry on a segment boundary
-  *and* at least one of the names to be published by this repository, so
-  `@scope/dsh` relates to `@scope/dsh-client-modules` while `@scope/cordis` does
-  not, and a look-alike name from outside relates to nothing. No package name
-  appears in the codebase;
+  time (275 of them here), and strictness differs by purpose:
+
+  | | acceptance (`related`) | retrieval (`related_for_retrieval`) |
+  |---|---|---|
+  | name ancestry required | yes | yes |
+  | manifest evidence | **both** names published here | either name published here |
+
+  So `@scope/dsh` and `@scope/dsh-client-modules` can carry a match, while
+  `@scope/dsh-fabricated` - a name nothing publishes - can only help *find* a
+  candidate and can never establish identity. A shared scope is not a relation
+  at all. No package name appears in the codebase.
+
+  The family also reaches **stage 1**: related packages expand the candidate
+  query, family-related candidates sort first, and they are exempt from the
+  `MAX_IDENTITY_CHECKS` budget, so a product-family incident cannot be silently
+  truncated before it is ever evaluated;
 * **environment can only veto** - runtime/OS never contributes to identity.
 
 **Verification evidence.** Committed suite: 35 negative and regression cases,
@@ -104,6 +126,13 @@ config_change/workaround.
 `tests/test_package_roles.py` covers the roles themselves: what crashes is
 primary, what is used is a dependency even when scoped, both roles in one
 sentence, spans and cues preserved, and the manifest-driven product relation.
+
+`tests/test_cue_endtoend.py` re-checks the same semantics **through the real
+interfaces** rather than by calling the gate: the installed console script as a
+subprocess and the MCP server over the protocol, asserting they agree. It covers
+bare negation, negated failure verbs, negated expected actions, health cues,
+healthy peer dependencies, and that every family-related candidate that reached
+stage 1 was actually evaluated.
 
 These regression wordings were written by the same developer who wrote the code,
 so they prove the defects are closed - **not** that the system generalises. No
@@ -174,7 +203,7 @@ excluded.
 | citation validity | 1.00 | 81 ids |
 | claim-support validity (structural) | 1.00 | 69 |
 | abstention recall | 1.00 | 38 |
-| **abstention precision** | **0.68** | 56 |
+| **abstention precision** | **0.75** | 51 |
 | documented recall gaps | 1 | - |
 | future-leakage violations | 0 | - |
 | latency p50 / p95 / max | 57 ms / 793 ms / 870 ms | 69 |
@@ -183,8 +212,8 @@ excluded.
 `evals/reports/latest.json`; the hard gates are re-asserted in
 `tests/test_eval_suite.py::TestHardGates`.
 
-**Remaining target.** Abstention precision is the weakest number here: 0.68 now,
-0.66 on the 65-case suite, 0.58 on the 55-case one. It is honest but crude - it counts every
+**Remaining target.** Abstention precision is the weakest number here: 0.75 now,
+0.68 before the cue fixes, 0.58 on the original 55-case suite. It is honest but crude - it counts every
 `collect_more_info` as an abstention, including the *correct* "your version
 already contains this change" answers, which are informative results rather than
 refusals. A better denominator, and B1-B6 baselines, are still to build. Claim-support validity is **structural only** - every claim
@@ -209,10 +238,10 @@ database that is down, empty, foreign or stale fails within ~3 seconds with a
 command to run, never a traceback; MCP returns a structured error instead of
 hanging.
 
-**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **178
-passed**, measured. The suite has grown each round - 118, 146, 157, now 178 with
-the package-role tests - so a number quoted from an earlier round no longer
-matches.
+**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **188
+passed**, measured. The suite has grown each round - 118, 146, 157, 178, now 188
+with the end-to-end cue tests - so a number quoted from an earlier round no
+longer matches.
 `tests/test_mcp_roundtrip.py`
 drives a real MCP SDK client: lists tools, calls both, asserts CLI/MCP parity on
 status, action, target, `incident.matched`, `stages.stopped_at` and the
@@ -232,9 +261,9 @@ payloads beyond the current coverage note.
 ## 6. Data
 
 **Current fact.** 550 discussions, 1510 comments, 123 doc files, 7 releases,
-275 package manifests, **15,667 stored symptom signatures** (measured after the
-package-role rebuild at extractor version 5; earlier rounds reported inflated
-figures - see the row-accounting note below). Discussion coverage is still partial and reports `degraded`.
+275 package manifests, **15,675 stored symptom signatures** (measured after the
+rebuild at extractor version 6; earlier rounds reported inflated figures - see
+the row-accounting note below). Discussion coverage is still partial and reports `degraded`.
 A paced backfill (`rt sync … --backfill-pages N`) walks older history a few pages
 at a time, persists its GraphQL cursor, resumes where it stopped, and never claims
 `complete` while pages remain.
@@ -316,19 +345,21 @@ what the database holds, so the counts are now separate:
 
 | count | meaning | last rebuild |
 |---|---|---|
-| `rows_attempted` | (kind, value) pairs offered to the database | 31,270 |
-| `rows_inserted` | of those, actually new | 15,667 |
-| `rows_stored_total` | rows the repository holds afterwards | **15,667** |
+| `rows_attempted` | (kind, value) pairs offered to the database | 31,289 |
+| `rows_inserted` | of those, actually new | 15,675 |
+| `rows_stored_total` | rows the repository holds afterwards | **15,675** |
 
 Earlier rounds reported the attempted figure (32,882, and 19,185 before that) as
 if it were storage. It was not.
 
-By kind, after the package-role rebuild: structural 5,142; behavior 4,666;
-component 2,073; subject_module 1,472; subject_mentioned 822; error 575;
-subject_path 557; subject_dependency 173; subject_builtin 94; cause 75;
-**subject_package 18**. That last number is the point of the rework: a package
-counts as the subject only where a report actually blames it, so package
-identity is now rare and precise rather than granted by token shape.
+By kind, after the cue rebuild: structural 5,142; behavior 4,666; component
+2,073; subject_module 1,469; subject_mentioned 820; error 575; subject_path 557;
+subject_dependency 173; subject_builtin 94; cause 70; **subject_package 36**.
+That last number is the point of the rework: a package counts as the subject
+only where a report actually blames it, so package identity is rare and precise
+rather than granted by token shape. It rose from 18 to 36 when negated expected
+actions (`did not preload X`) were recognised as failures, and `cause` fell from
+75 to 70 as healthy peer dependencies stopped counting as version conflicts.
 
 **Verification evidence.** `rt signatures <repo> --rebuild` prints all three, and
 `rows_inserted` comes from `RETURNING` on the insert rather than from the length
@@ -336,6 +367,28 @@ of the batch, so conflicts are excluded rather than assumed.
 
 **Remaining target.** The second pass re-offers every row; it could re-offer only
 the objects whose module names the corpus newly vouches for.
+
+**Blockers.** None.
+
+---
+
+## 10. A defect the end-to-end tests found
+
+**Current fact.** When a report gave no runtime at all, the applicability gate
+compared `None` against the incident's runtime bounds, could not order it, and
+reported `unresolved_version` - blaming the user's *core version*, which was
+perfectly parseable, for a gap in their report. The correct answer is that the
+runtime is missing information: the bounds simply cannot be checked.
+
+**Verification evidence.** Found by `tests/test_cue_endtoend.py`, which runs the
+real symptom through the installed CLI without `--runtime`: it returned
+`collect_more_info` with the rationale "core version '0.1.2-alpha.1' cannot be
+ordered against release versions". It now returns `upgrade -> dsh-v0.1.2-alpha.2`
+and records the unchecked bounds as a reason. This was invisible to every prior
+round because the existing cases all supplied a runtime.
+
+**Remaining target.** None; the missing-runtime path is now a stated reason
+rather than a verdict about the version.
 
 **Blockers.** None.
 

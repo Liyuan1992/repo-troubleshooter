@@ -137,7 +137,12 @@ CAUSE_SIGNALS: dict[str, tuple[str, ...]] = {
         r"\b(postgres|postgresql|mysql|sqlite|redis)\b.*\b(error|fail|refus)",
     ),
     "version_conflict": (
-        r"\bpeer dep\w*\b",
+        # A peer dependency is a conflict only when something says it conflicts.
+        # "peer dependency @scope/lib is healthy" states that nothing is wrong.
+        r"\bpeer\s+dep\w*\b[^.\n]{0,60}?\b(?:conflict\w*|mismatch\w*|unmet|unresolved"
+        r"|incompatible|invalid|missing|fail\w*|could\s*not\s+\w+|cannot\s+\w+)\b",
+        r"\b(?:conflict\w*|mismatch\w*|unmet|unresolved|incompatible)\b[^.\n]{0,60}?"
+        r"\bpeer\s+dep\w*\b",
         r"\bERESOLVE\b",
         r"\bincompatible version\b",
         r"\bversion mismatch\b",

@@ -147,16 +147,39 @@ class PackageFamily:
         `@x/cordis` to `@x/dsh-client-modules` and quietly disable the package
         conflict this whole gate exists to enforce.
 
-        Ancestry alone is not enough either: at least one of the two names must
-        actually be published by this repository, according to the manifests
-        read from its tree. Two look-alike names from outside are not evidence
-        of a product relation, and an empty family therefore relates nothing.
+        Ancestry alone is not enough either. For a match to be *accepted* on a
+        product relation, **both** names must be published by this repository
+        according to the manifests read from its tree. A name that merely shares
+        a prefix - `@scope/dsh-fabricated` - is not part of the product just
+        because it looks like one, and an empty family relates nothing.
         """
         if left == right:
+            return True
+        if not (self.owns(left) and self.owns(right)):
+            return False
+        return _is_name_ancestor(left, right) or _is_name_ancestor(right, left)
+
+    def related_for_retrieval(self, left: str, right: str) -> bool:
+        """Looser relation, for finding candidates only.
+
+        Stage 1 may follow a prefix relation with evidence on just one side,
+        because surfacing a candidate costs nothing - the identity gate still
+        has to accept it, and acceptance uses the strict `related`. An unknown
+        prefix name can therefore help recall without ever proving identity.
+        """
+        if self.related(left, right):
             return True
         if not (self.owns(left) or self.owns(right)):
             return False
         return _is_name_ancestor(left, right) or _is_name_ancestor(right, left)
+
+    def expand_for_retrieval(self, names: set[str]) -> set[str]:
+        """Published names worth pulling into stage 1 alongside ``names``."""
+        expanded: set[str] = set()
+        for published in self.names:
+            if any(self.related_for_retrieval(published, name) for name in names):
+                expanded.add(published)
+        return expanded
 
     def any_related(self, left: set[str], right: set[str]) -> list[tuple[str, str]]:
         return [(a, b) for a in sorted(left) for b in sorted(right) if self.related(a, b)]

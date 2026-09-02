@@ -11,9 +11,14 @@ So every package mention keeps the span that produced it and the cue that
 classified it, and roles come from context:
 
 ``primary``
-    The thing that failed. Either the grammatical subject of a failure verb
-    (`X crashes`, `X throws`, `X did not load`) or the object of one
+    The thing that failed: the subject of a failure verb (`X crashes`), the
+    subject of a *named* negated action (`X did not load`), or the object of one
     (`could not resolve X`, `HTML did not preload X`).
+
+    A bare negation proves nothing on its own - the action has to be named - and
+    negating a failure verb is good news: `X does not crash` leaves X merely
+    mentioned. An explicit health cue (`X is healthy`, `X is not failing`)
+    outranks any failure word that happens to stand nearby.
 
 ``referenced_dependency``
     Something the report says is *used*: `depends on X`, `imports X`,
@@ -35,7 +40,7 @@ from enum import StrEnum
 # Bumped whenever subject or behaviour extraction changes in a way that makes
 # already-mined signatures wrong. The value is stored alongside the mined rows;
 # a database holding an older version must be rebuilt before it may be used.
-FEATURE_EXTRACTOR_VERSION = 5
+FEATURE_EXTRACTOR_VERSION = 6
 
 # Directories every package has; a path tail led by one of these names nothing.
 GENERIC_PATH_DIRS = frozenset(
@@ -136,26 +141,179 @@ DEPENDENCY_CUE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# "X crashes", "X throws", "X did not load"
-FAILURE_VERB_AFTER_RE = re.compile(
-    r"^[\"'`]?\s*(?:is\s+|was\s+|has\s+|have\s+)?"
-    r"(?:crash(?:es|ed|ing)?|throw(?:s|n|ing)?|fail(?:s|ed|ing)?|error(?:s|ed|ing)?"
-    r"|break(?:s|ing)?|broke(?:n)?|hang(?:s|ing)?|panic(?:s|ked)?|stop(?:s|ped)?"
-    r"|blow(?:s)?\s+up|blew\s+up|die[sd]?|exits?|refus(?:es|ed)"
-    r"|(?:does\s*n[o']?t|did\s*n[o']?t|do\s*n[o']?t|cannot|can\s*not|can[''`]t|won[''`]t"
-    r"|unable\s+to|never)\b"
-    r"|returns?\s+(?:an?\s+)?(?:error|nothing|undefined|null)"
-    r"|report(?:s|ed)?\s+(?:an?\s+)?(?:error|failure)"
-    r")",
+# Verbs that *are* the failure. Negating one of these is good news, not evidence:
+# "does not crash" says the thing works.
+FAILURE_VERBS = (
+    "crash",
+    "crashes",
+    "crashed",
+    "crashing",
+    "fail",
+    "fails",
+    "failed",
+    "failing",
+    "throw",
+    "throws",
+    "threw",
+    "thrown",
+    "throwing",
+    "error",
+    "errors",
+    "errored",
+    "break",
+    "breaks",
+    "broke",
+    "broken",
+    "breaking",
+    "hang",
+    "hangs",
+    "hung",
+    "hanging",
+    "panic",
+    "panics",
+    "panicked",
+    "die",
+    "dies",
+    "died",
+    "abort",
+    "aborts",
+    "aborted",
+    "regress",
+    "regresses",
+    "regressed",
+)
+
+# Actions a healthy system performs. Negating one of these *is* the failure:
+# "did not preload" says the thing that should have happened did not.
+EXPECTED_ACTIONS = (
+    "load",
+    "loads",
+    "loaded",
+    "loading",
+    "preload",
+    "preloads",
+    "preloaded",
+    "resolve",
+    "resolves",
+    "resolved",
+    "start",
+    "starts",
+    "started",
+    "boot",
+    "boots",
+    "booted",
+    "mount",
+    "mounts",
+    "mounted",
+    "render",
+    "renders",
+    "rendered",
+    "respond",
+    "responds",
+    "responded",
+    "return",
+    "returns",
+    "returned",
+    "initialize",
+    "initialise",
+    "initializes",
+    "initialised",
+    "initialized",
+    "connect",
+    "connects",
+    "connected",
+    "compile",
+    "compiles",
+    "compiled",
+    "build",
+    "builds",
+    "built",
+    "install",
+    "installs",
+    "installed",
+    "appear",
+    "appears",
+    "appeared",
+    "run",
+    "runs",
+    "ran",
+    "launch",
+    "launches",
+    "launched",
+    "open",
+    "opens",
+    "opened",
+    "apply",
+    "applies",
+    "applied",
+    "register",
+    "registers",
+    "registered",
+    "emit",
+    "emits",
+    "emitted",
+    "find",
+    "finds",
+    "found",
+    "work",
+    "works",
+    "worked",
+    "come",
+    "comes",
+    "came",
+    "show",
+    "shows",
+    "shown",
+    "update",
+    "updates",
+    "updated",
+)
+
+_NEGATION = (
+    r"(?:does|did|do|is|was|are|were|has|have|will|would|can|could)\s*n[o’']?t"
+    r"|cannot|can\s*not|never|unable\s+to|fails?\s+to|failed\s+to"
+)
+
+# "X did not load", "X never starts" - the negated action must be named, so a
+# bare "does not" carries no meaning on its own.
+NEGATED_ACTION_AFTER_RE = re.compile(
+    r"^[\"'`]?\s*(?:" + _NEGATION + r")\s+(?P<verb>[a-z]+)",
     re.IGNORECASE,
 )
 
-# "could not resolve X", "HTML did not preload X", "cannot find X"
-FAILURE_OBJECT_BEFORE_RE = re.compile(
-    r"(?:fail(?:s|ed)?\s+to\s+\w+|did\s*n[o']?t\s+\w+|does\s*n[o']?t\s+\w+|could\s*n[o']?t\s+\w+"
-    r"|cannot\s+\w+|can\s*not\s+\w+|unable\s+to\s+\w+|never\s+\w+|error\s+(?:in|loading|from)"
-    r"|problem\s+(?:in|with)|crash(?:es|ed)?\s+in|thrown\s+by|raised\s+(?:from|by)"
-    r"|coming\s+from|broken\s+in|missing)\s+[\"'`]?$",
+# "X crashes", "X throws"
+FAILURE_VERB_AFTER_RE = re.compile(
+    r"^[\"'`]?\s*(?:is\s+|was\s+|has\s+|have\s+)?"
+    r"(?P<verb>" + "|".join(sorted(FAILURE_VERBS, key=len, reverse=True)) + r")\b"
+    r"|^[\"'`]?\s*(?:blow(?:s)?\s+up|blew\s+up|exits?\s+with|refus(?:es|ed)\s+to"
+    r"|returns?\s+(?:an?\s+)?(?:error|nothing|undefined|null)"
+    r"|report(?:s|ed)?\s+(?:an?\s+)?(?:error|failure))",
+    re.IGNORECASE,
+)
+
+# "could not resolve X", "HTML did not preload X" - again, the action is named.
+NEGATED_ACTION_BEFORE_RE = re.compile(
+    r"(?:" + _NEGATION + r")\s+(?P<verb>[a-z]+)(?:\s+\w+){0,2}\s+[\"'`]?$",
+    re.IGNORECASE,
+)
+
+# "error in X", "raised from X", "crashes in X" - a failure located at X.
+FAILURE_LOCATION_BEFORE_RE = re.compile(
+    r"(?:error\s+(?:in|loading|from)|problem\s+(?:in|with)|crash(?:es|ed)?\s+in"
+    r"|thrown\s+by|raised\s+(?:from|by)|coming\s+from|broken\s+in|missing)"
+    r"\s+[\"'`]?$",
+    re.IGNORECASE,
+)
+
+# Explicit counter-evidence: the report says this one is fine. It outranks any
+# failure word that merely happens to be nearby.
+HEALTH_CUE_RE = re.compile(
+    r"\b(?:is\s+)?(?:healthy|fine|ok|okay|working|works\s+(?:fine|well)|unaffected"
+    r"|resolved|fixed|passing|passes|green|stable|up\s+to\s+date|not\s+(?:the\s+)?"
+    r"(?:cause|culprit|problem|issue))\b"
+    r"|\b(?:does|did|is|was|are|were)\s*n[o\u2019']?t\s+(?:"
+    + "|".join(sorted(FAILURE_VERBS, key=len, reverse=True))
+    + r")\b",
     re.IGNORECASE,
 )
 
@@ -314,52 +472,72 @@ def identifying_path_tail(path: str) -> str | None:
     return None
 
 
+def _negated_action_is_failure(verb: str) -> bool:
+    """Is "did not <verb>" evidence of a failure?
+
+    Negating a failure verb is good news - "does not crash" says it works - so
+    only the negation of an expected action counts.
+    """
+    lowered = verb.lower()
+    if lowered in FAILURE_VERBS:
+        return False
+    return lowered in EXPECTED_ACTIONS
+
+
 def classify_mention(text: str, start: int, end: int, name: str) -> PackageMention:
     """Decide a mention's role from the words immediately around it."""
     before = text[max(0, start - LOOKBEHIND) : start]
     after = text[end : end + LOOKAHEAD]
 
-    dependency_cue = DEPENDENCY_CUE_RE.search(before)
-    if dependency_cue:
+    def build(role: PackageRole, cue: str) -> PackageMention:
         return PackageMention(
             name=name,
-            role=PackageRole.DEPENDENCY,
+            role=role,
             start=start,
             end=end,
-            cue=dependency_cue.group(0).strip(),
-            context=(before[-32:] + text[start:end] + after[:24]).strip(),
+            cue=cue,
+            context=(before[-32:] + text[start:end] + after[:32]).strip(),
         )
+
+    # Explicit counter-evidence wins over any failure word merely standing near
+    # this mention: "@scope/lib is healthy" is not a report that it failed.
+    health = HEALTH_CUE_RE.search(before[-24:]) or HEALTH_CUE_RE.search(after)
+    healthy = health.group(0).strip() if health else ""
+
+    dependency_cue = DEPENDENCY_CUE_RE.search(before)
+    if dependency_cue:
+        cue = dependency_cue.group(0).strip()
+        return build(PackageRole.DEPENDENCY, f"{cue} (+healthy: {healthy})" if healthy else cue)
+
+    if healthy:
+        return build(PackageRole.MENTIONED, f"healthy: {healthy}")
+
+    # "X did not preload" - the negated action has to be named and has to be an
+    # action the system was expected to perform.
+    negated_after = NEGATED_ACTION_AFTER_RE.match(after)
+    if negated_after:
+        verb = negated_after.group("verb")
+        if _negated_action_is_failure(verb):
+            return build(PackageRole.PRIMARY, negated_after.group(0).strip())
+        # "X does not crash" - explicitly not a failure.
+        return build(PackageRole.MENTIONED, f"negated failure: {negated_after.group(0).strip()}")
 
     failure_after = FAILURE_VERB_AFTER_RE.match(after)
     if failure_after:
-        return PackageMention(
-            name=name,
-            role=PackageRole.PRIMARY,
-            start=start,
-            end=end,
-            cue=failure_after.group(0).strip(),
-            context=(before[-24:] + text[start:end] + after[:32]).strip(),
-        )
+        return build(PackageRole.PRIMARY, failure_after.group(0).strip())
 
-    failure_before = FAILURE_OBJECT_BEFORE_RE.search(before)
-    if failure_before:
-        return PackageMention(
-            name=name,
-            role=PackageRole.PRIMARY,
-            start=start,
-            end=end,
-            cue=failure_before.group(0).strip(),
-            context=(before[-32:] + text[start:end] + after[:24]).strip(),
-        )
+    negated_before = NEGATED_ACTION_BEFORE_RE.search(before)
+    if negated_before:
+        verb = negated_before.group("verb")
+        if _negated_action_is_failure(verb):
+            return build(PackageRole.PRIMARY, negated_before.group(0).strip())
+        return build(PackageRole.MENTIONED, f"negated failure: {negated_before.group(0).strip()}")
 
-    return PackageMention(
-        name=name,
-        role=PackageRole.MENTIONED,
-        start=start,
-        end=end,
-        cue="",
-        context=(before[-24:] + text[start:end] + after[:24]).strip(),
-    )
+    location_before = FAILURE_LOCATION_BEFORE_RE.search(before)
+    if location_before:
+        return build(PackageRole.PRIMARY, location_before.group(0).strip())
+
+    return build(PackageRole.MENTIONED, "")
 
 
 def _package_aliases(name: str) -> list[str]:
