@@ -336,6 +336,9 @@ class SymptomFeatures:
     # `peer dependency`. Scoped or not: being scoped proves nothing.
     subject_dependencies: set[str] = field(default_factory=set)
     # Packages the report says are fine: `X is healthy`, `X does not crash`.
+    # A package can be here *and* in `subject_dependencies`: "a healthy
+    # dependency" states two independent facts, and collapsing them into one
+    # role is what let an explicitly cleared package still authorise an upgrade.
     subject_confirmed_non_primary: set[str] = field(default_factory=set)
     # Packages the report contradicts itself about: `X is healthy but crashes`.
     # Stronger than unknown, and never able to authorise an action.
@@ -488,7 +491,7 @@ def extract(text: str | None, *, known_modules: frozenset[str] = frozenset()) ->
         error=error,
         subject_packages=subjects.primary_packages,
         subject_dependencies=subjects.dependencies,
-        subject_confirmed_non_primary=subjects.confirmed_non_primary,
+        subject_confirmed_non_primary=subjects.healthy_packages,
         subject_conflicted=subjects.conflicted_packages,
         subject_unresolved=subjects.unresolved_packages,
         package_mentions=[m.to_json() for m in subjects.package_mentions],

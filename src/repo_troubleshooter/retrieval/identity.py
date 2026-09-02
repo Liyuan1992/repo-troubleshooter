@@ -177,6 +177,10 @@ def evaluate(
     # A report that names no package at all (a pasted log) is deliberately not
     # covered: its rare symbols still carry identity, which is how
     # snippet-only incidents are matched.
+    # `subject_confirmed_non_primary` now holds every package the report calls
+    # healthy, including ones it also calls dependencies. Reading the state fact
+    # rather than the final role is the point: "a healthy dependency" used to
+    # collapse to "dependency" and slip past this check.
     if (
         query.subject_confirmed_non_primary
         and not query.subject_packages

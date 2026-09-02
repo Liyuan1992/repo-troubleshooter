@@ -44,7 +44,7 @@ from enum import StrEnum
 # Bumped whenever subject or behaviour extraction changes in a way that makes
 # already-mined signatures wrong. The value is stored alongside the mined rows;
 # a database holding an older version must be rebuilt before it may be used.
-FEATURE_EXTRACTOR_VERSION = 9
+FEATURE_EXTRACTOR_VERSION = 10
 
 # Directories every package has; a path tail led by one of these names nothing.
 GENERIC_PATH_DIRS = frozenset(
@@ -125,27 +125,62 @@ ADJECTIVAL_SUFFIXES = (
 )
 
 
-class PackageRole(StrEnum):
-    """What a report says about a package it names.
+class PackageRelation(StrEnum):
+    """How the report says the package is connected to the system."""
 
-    The default is deliberately `UNRESOLVED`, not "harmless". Every previous
-    round of this gate leaked because an unrecognised phrasing silently became a
-    neutral mention, and a neutral mention cannot refuse anything. A package we
-    cannot classify is now a reason to be careful, not a reason to relax.
+    #: The report says it is used: `depends on X`, `imports X`, `installed X`.
+    DEPENDENCY = "dependency"
+    #: The report talks about it as the thing itself, not as something used.
+    DIRECT = "direct"
+    UNKNOWN = "unknown"
+
+
+class PackageState(StrEnum):
+    """What the report says about the package's condition.
+
+    Independent of the relation: `dependency + healthy` and
+    `dependency + failing` are both sayable, and one must never overwrite the
+    other. Collapsing them into a single role is what let a report that
+    explicitly cleared a package still authorise an upgrade of it.
     """
 
-    #: The report says this failed.
+    #: The report says it failed.
+    FAILING = "failing"
+    #: The report says it is fine.
+    HEALTHY = "healthy"
+    #: The report says both.
+    CONFLICTED = "conflicted"
+    UNKNOWN = "unknown"
+
+
+class PackageRole(StrEnum):
+    """The single label derived from (relation, state), kept for reporting.
+
+    Derived, never stored as the source of truth: the two axes above are.
+    """
+
     PRIMARY = "primary"
-    #: The report says this is used: `depends on X`, `imports X`.
     DEPENDENCY = "referenced_dependency"
-    #: The report says this one is fine: `X is healthy`, `X does not crash`.
     CONFIRMED_NON_PRIMARY = "confirmed_non_primary"
-    #: The report says two incompatible things about it: `X is healthy but
-    #: crashes`. Stronger than unknown - we were told something is wrong here,
-    #: so it can never authorise an action.
     CONFLICTED = "conflicted_subject"
-    #: Named, but the role could not be determined. Never treated as harmless.
     UNRESOLVED = "unresolved_subject"
+
+
+def derive_role(relation: PackageRelation, state: PackageState, ambiguous: bool) -> PackageRole:
+    """Collapse the two axes for display. The gate reads the axes, not this."""
+    if state is PackageState.CONFLICTED:
+        return PackageRole.CONFLICTED
+    if state is PackageState.FAILING:
+        return PackageRole.PRIMARY
+    if ambiguous:
+        # A failure was stated nearby and we could not attribute it. Refusing to
+        # call this a plain dependency is the whole point.
+        return PackageRole.UNRESOLVED
+    if state is PackageState.HEALTHY:
+        return PackageRole.CONFIRMED_NON_PRIMARY
+    if relation is PackageRelation.DEPENDENCY:
+        return PackageRole.DEPENDENCY
+    return PackageRole.UNRESOLVED
 
 
 # --- context cues -----------------------------------------------------------
@@ -415,22 +450,36 @@ LOOKAHEAD = 40
 
 @dataclass(frozen=True)
 class PackageMention:
-    """One package name, the span that produced it, and why it got its role."""
+    """One package name, the span that produced it, and why it got its facts."""
 
     name: str
-    role: PackageRole
+    #: The package this mention is about, with any sub-path stripped, so
+    #: `@scope/pkg/file.js` and `@scope/pkg` aggregate together.
+    canonical: str
+    relation: PackageRelation
+    state: PackageState
     start: int
     end: int
     cue: str
     context: str
+    #: A failure was stated nearby that could not be attributed to a subject.
+    ambiguous: bool = False
+
+    @property
+    def role(self) -> PackageRole:
+        return derive_role(self.relation, self.state, self.ambiguous)
 
     def to_json(self) -> dict[str, object]:
         return {
             "name": self.name,
+            "canonical": self.canonical,
+            "relation": str(self.relation),
+            "state": str(self.state),
             "role": str(self.role),
             "span": [self.start, self.end],
             "cue": self.cue,
             "context": self.context,
+            "ambiguous": self.ambiguous,
         }
 
 
@@ -452,11 +501,20 @@ class Subjects:
 
     @property
     def dependencies(self) -> set[str]:
-        return self._names(PackageRole.DEPENDENCY)
+        """Every package the report says is used - whatever its state."""
+        return {
+            m.name
+            for m in self.package_mentions
+            if m.relation is PackageRelation.DEPENDENCY and not m.ambiguous
+        }
 
     @property
-    def confirmed_non_primary(self) -> set[str]:
-        return self._names(PackageRole.CONFIRMED_NON_PRIMARY)
+    def healthy_packages(self) -> set[str]:
+        """Every package the report says is fine - including dependencies.
+
+        This is the fact the old single-role model destroyed.
+        """
+        return {m.name for m in self.package_mentions if m.state is PackageState.HEALTHY}
 
     @property
     def conflicted_packages(self) -> set[str]:
@@ -554,7 +612,9 @@ PREDICATE_LINK_RE = re.compile(
 
 # Only a sentence ends a mention's predicate chain. Commas and conjunctions do
 # not: they usually continue it.
-SENTENCE_BREAK_RE = re.compile(r"[.!?\n]")
+# A sentence break, not a decimal point: `nebula-theme@1.2.3` must not read as
+# four sentences, which truncated the predicate window right after the version.
+SENTENCE_BREAK_RE = re.compile(r"[.!?](?=\s|$)|[\n]")
 
 # "stopped working", "ceased responding": cessation of a normal activity.
 CESSATION_RE = re.compile(
@@ -563,22 +623,32 @@ CESSATION_RE = re.compile(
 )
 
 
-def _negated_meaning(target: str) -> PackageRole:
+# Subjects that refer back to the package just named: "import X, but it crashes",
+# "use X; the package fails". Anything else - "the server crashes" - is a
+# different subject and must not be attributed to X.
+COREFERENCE_RE = re.compile(
+    r"^(?:it|they|this|that|which|"
+    r"the\s+(?:package|module|library|dependency|plugin|component|thing))\s+",
+    re.IGNORECASE,
+)
+
+
+def _negated_meaning(target: str) -> PackageState:
     """What does "not <target>" say about the thing it is attached to?
 
-        does not crash    negating a failure  -> confirmed fine
-        did not load      negating an action  -> the failure itself
-        is not working    negating a state    -> the failure itself
+        does not crash    negating a failure  -> healthy
+        did not load      negating an action  -> failing
+        is not working    negating a state    -> failing
 
-    An unrecognised word yields `UNRESOLVED`: we were told something was negated
-    and we do not know what it means.
+    An unrecognised word yields UNKNOWN: something was negated and we do not
+    know what it means.
     """
     lowered = re.sub(r"[\s-]+", " ", target.lower().strip())
     if lowered in FAILURE_VERBS:
-        return PackageRole.CONFIRMED_NON_PRIMARY
+        return PackageState.HEALTHY
     if lowered in POSITIVE_STATES or lowered in EXPECTED_ACTIONS:
-        return PackageRole.PRIMARY
-    return PackageRole.UNRESOLVED
+        return PackageState.FAILING
+    return PackageState.UNKNOWN
 
 
 def predicate_window(
@@ -586,10 +656,9 @@ def predicate_window(
 ) -> tuple[str, str]:
     """The text that belongs to *this* mention, before and after it.
 
-    Stops at a sentence break and, crucially, at any other package mention: a
-    cue may only speak for the package it is attached to. Commas and
-    conjunctions do **not** stop it, because `X starts but crashes` is one
-    statement about X.
+    Stops at a sentence break and at any other package mention: a cue may only
+    speak for the package it is attached to. Commas and conjunctions do not stop
+    it, because `X starts but crashes` is one statement about X.
     """
     left_limit = max(0, start - LOOKBEHIND)
     right_limit = min(len(text), end + LOOKAHEAD)
@@ -615,19 +684,14 @@ def predicate_window(
 
 
 def _predicate_positions(after: str) -> list[tuple[int, str]]:
-    """Offsets in ``after`` where a predicate about the mention may start.
-
-    The head position, plus everything following a coordinator. Each candidate
-    is matched *anchored* there, so `X is healthy but the server crashes` cannot
-    read `crashes` as X's predicate: that clause starts with a new subject.
-    """
+    """Offsets in ``after`` where a predicate about the mention may start."""
     positions = [(0, "")]
     for match in PREDICATE_LINK_RE.finditer(after):
         positions.append((match.end(), match.group(0).strip()))
     return positions
 
 
-def _read_predicate(fragment: str) -> tuple[PackageRole, str] | None:
+def _read_predicate(fragment: str) -> tuple[PackageState, str] | None:
     """Classify one anchored predicate, or None when it says nothing."""
     negated = NEGATED_AFTER_RE.match(fragment)
     if negated:
@@ -635,17 +699,48 @@ def _read_predicate(fragment: str) -> tuple[PackageRole, str] | None:
 
     cessation = CESSATION_RE.match(fragment)
     if cessation:
-        # "stopped working" is the end of a normal activity: a failure.
-        return PackageRole.PRIMARY, cessation.group(0).strip()
+        return PackageState.FAILING, cessation.group(0).strip()
 
     health = HEALTH_AFTER_RE.match(fragment)
     if health:
-        return PackageRole.CONFIRMED_NON_PRIMARY, health.group(0).strip()
+        return PackageState.HEALTHY, health.group(0).strip()
 
     failure = FAILURE_VERB_AFTER_RE.match(fragment)
     if failure:
-        return PackageRole.PRIMARY, failure.group(0).strip()
+        return PackageState.FAILING, failure.group(0).strip()
 
+    return None
+
+
+def _read_predicate_with_subject(fragment: str) -> tuple[PackageState, str, bool] | None:
+    """Read a predicate that may carry its own subject.
+
+    Returns (state, cue, attributable). A coreference subject - `it`, `the
+    package` - refers back to the mention, so the predicate is attributed to it.
+    Any other subject means the clause is about something else; if that clause
+    reports a failure we return it as *unattributable*, which makes the mention
+    ambiguous rather than a safe dependency.
+    """
+    direct = _read_predicate(fragment)
+    if direct is not None:
+        state, cue = direct
+        return state, cue, True
+
+    coreference = COREFERENCE_RE.match(fragment)
+    if coreference:
+        inner = _read_predicate(fragment[coreference.end() :])
+        if inner is not None:
+            state, cue = inner
+            return state, f"{coreference.group(0).strip()} {cue}", True
+        return None
+
+    # Some other subject. Only a failure matters here, and only as ambiguity.
+    words = fragment.split()
+    for index in range(1, min(len(words), 4)):
+        tail = " ".join(words[index:])
+        inner = _read_predicate(tail)
+        if inner is not None and inner[0] is PackageState.FAILING:
+            return inner[0], f"unattributed: {inner[1]}", False
     return None
 
 
@@ -654,82 +749,139 @@ def classify_mention(
     start: int,
     end: int,
     name: str,
+    canonical: str,
     other_spans: Sequence[tuple[int, int]] = (),
 ) -> PackageMention:
-    """Decide a mention's role from the predicates attached to it.
+    """Read a mention onto both axes.
 
-    Fail-closed: when the predicates disagree, or when nothing recognisable is
-    attached, the role is `UNRESOLVED`. Only positive evidence produces
-    `PRIMARY`, `DEPENDENCY` or `CONFIRMED_NON_PRIMARY`.
+    Relation and state are decided separately, so `depends on X, which is
+    healthy` keeps both facts and `import X, but it crashes` is not silently
+    filed as a plain dependency.
     """
     before, after = predicate_window(text, start, end, other_spans)
 
-    def build(role: PackageRole, cue: str) -> PackageMention:
-        return PackageMention(
-            name=name,
-            role=role,
-            start=start,
-            end=end,
-            cue=cue,
-            context=(before[-32:] + text[start:end] + after[:40]).strip(),
-        )
-
-    # Predicates are read before the dependency cue, because a dependency that
-    # is itself blamed is still the thing being blamed:
-    # "peer dependency @scope/lib is not up to date" reports a failure of
-    # @scope/lib, and calling it a mere dependency would hide that.
-    verdicts: list[tuple[PackageRole, str]] = []
-    for offset, link in _predicate_positions(after):
-        reading = _read_predicate(after[offset:])
-        if reading is not None:
-            role, cue = reading
-            verdicts.append((role, f"{link} {cue}".strip()))
-
-    roles = {role for role, _ in verdicts}
-    cues = "; ".join(cue for _, cue in verdicts)
     dependency_cue = DEPENDENCY_CUE_RE.search(before)
-    dependency_text = dependency_cue.group(0).strip() if dependency_cue else ""
+    install_context = INSTALL_CONTEXT_RE.search(before)
+    relation = (
+        PackageRelation.DEPENDENCY
+        if (dependency_cue or install_context)
+        else PackageRelation.UNKNOWN
+    )
+    relation_match = dependency_cue or install_context
+    relation_cue = relation_match.group(0).strip() if relation_match else ""
 
-    if roles == {PackageRole.PRIMARY}:
-        prefix = f"{dependency_text} + " if dependency_text else ""
-        return build(PackageRole.PRIMARY, prefix + cues)
-    if len(roles) > 1:
-        # "X is healthy but crashes" - the report contradicts itself.
-        return build(PackageRole.CONFLICTED, "conflicting predicates: " + cues)
+    states: list[tuple[PackageState, str]] = []
+    ambiguous = False
+    for offset, link in _predicate_positions(after):
+        reading = _read_predicate_with_subject(after[offset:])
+        if reading is None:
+            continue
+        state, cue, attributable = reading
+        if attributable:
+            states.append((state, f"{link} {cue}".strip()))
+        elif state is PackageState.FAILING:
+            ambiguous = True
 
-    # A failure stated *before* the mention outranks a dependency cue in the
-    # same span: `failed to install X` and `could not import X` are reports
-    # about X, not statements that X is merely used. Order matters because both
-    # patterns match the same words.
+    # A failure stated before the mention: `could not resolve X`, `error in X`.
     negated_before = NEGATED_BEFORE_RE.search(before)
     if negated_before:
-        role = _negated_meaning(negated_before.group("verb"))
-        if role is not PackageRole.CONFIRMED_NON_PRIMARY:
-            prefix = f"{dependency_text} + " if dependency_text else ""
-            return build(role, prefix + negated_before.group(0).strip())
+        before_state = _negated_meaning(negated_before.group("verb"))
+        states.append((before_state, negated_before.group(0).strip()))
+        if before_state is PackageState.UNKNOWN:
+            # `could not import X`: something was negated about X and we cannot
+            # say what it means. That is not a licence to file X as a dependency.
+            ambiguous = True
+    elif FAILURE_LOCATION_BEFORE_RE.search(before):
+        location = FAILURE_LOCATION_BEFORE_RE.search(before)
+        assert location is not None
+        states.append((PackageState.FAILING, location.group(0).strip()))
+    elif HEALTH_BEFORE_RE.search(before):
+        health = HEALTH_BEFORE_RE.search(before)
+        assert health is not None
+        states.append((PackageState.HEALTHY, health.group(0).strip()))
 
-    location_before = FAILURE_LOCATION_BEFORE_RE.search(before)
-    if location_before:
-        return build(PackageRole.PRIMARY, location_before.group(0).strip())
+    distinct = {state for state, _ in states if state is not PackageState.UNKNOWN}
+    if PackageState.FAILING in distinct and PackageState.HEALTHY in distinct:
+        state = PackageState.CONFLICTED
+    elif PackageState.FAILING in distinct:
+        state = PackageState.FAILING
+    elif PackageState.HEALTHY in distinct:
+        state = PackageState.HEALTHY
+    else:
+        state = PackageState.UNKNOWN
 
-    if dependency_cue:
-        return build(
-            PackageRole.DEPENDENCY, f"{dependency_text} + {cues}" if cues else dependency_text
-        )
+    cue_parts = [relation_cue] if relation_cue else []
+    cue_parts += [cue for _, cue in states]
+    if ambiguous:
+        cue_parts.append("unattributed failure nearby")
 
-    if roles == {PackageRole.CONFIRMED_NON_PRIMARY}:
-        return build(PackageRole.CONFIRMED_NON_PRIMARY, cues)
-    if roles == {PackageRole.UNRESOLVED}:
-        return build(PackageRole.UNRESOLVED, cues)
+    return PackageMention(
+        name=name,
+        canonical=canonical,
+        relation=relation,
+        state=state,
+        start=start,
+        end=end,
+        cue="; ".join(part for part in cue_parts if part),
+        context=(before[-32:] + text[start:end] + after[:40]).strip(),
+        ambiguous=ambiguous and state is PackageState.UNKNOWN,
+    )
 
-    if negated_before:
-        return build(PackageRole.CONFIRMED_NON_PRIMARY, negated_before.group(0).strip())
 
-    health_before = HEALTH_BEFORE_RE.search(before)
-    if health_before:
-        return build(PackageRole.CONFIRMED_NON_PRIMARY, health_before.group(0).strip())
+def aggregate_states(mentions: list[PackageMention]) -> list[PackageMention]:
+    """Merge every mention of the same package into one consistent verdict.
 
-    return build(PackageRole.UNRESOLVED, "")
+    `@x is healthy.` and `@x crashes.` are two sentences about one package, and
+    together they are a contradiction - not a health fact in one place and a
+    blame in another. Aggregation is by canonical name, so repeats, later
+    sentences and sub-path aliases all fold together.
+    """
+    by_package: dict[str, set[PackageState]] = {}
+    for mention in mentions:
+        by_package.setdefault(mention.canonical, set()).add(mention.state)
+
+    merged: list[PackageMention] = []
+    for mention in mentions:
+        states = by_package[mention.canonical]
+        if PackageState.FAILING in states and PackageState.HEALTHY in states:
+            merged.append(
+                PackageMention(
+                    name=mention.name,
+                    canonical=mention.canonical,
+                    relation=mention.relation,
+                    state=PackageState.CONFLICTED,
+                    start=mention.start,
+                    end=mention.end,
+                    cue=f"{mention.cue}; contradicted by another mention of the same package",
+                    context=mention.context,
+                    ambiguous=mention.ambiguous,
+                )
+            )
+            continue
+        # A state stated anywhere about this package applies to every mention of
+        # it: "@x is healthy ... @x again" must not leave the second one blank.
+        resolved = mention.state
+        if resolved is PackageState.UNKNOWN:
+            known = states - {PackageState.UNKNOWN}
+            if len(known) == 1:
+                resolved = next(iter(known))
+        if resolved is mention.state:
+            merged.append(mention)
+        else:
+            merged.append(
+                PackageMention(
+                    name=mention.name,
+                    canonical=mention.canonical,
+                    relation=mention.relation,
+                    state=resolved,
+                    start=mention.start,
+                    end=mention.end,
+                    cue=f"{mention.cue}; stated elsewhere in this report".strip("; "),
+                    context=mention.context,
+                    ambiguous=mention.ambiguous,
+                )
+            )
+    return merged
 
 
 def _package_aliases(name: str) -> list[str]:
@@ -756,7 +908,10 @@ def classify(text: str, known_modules: frozenset[str] = frozenset()) -> Subjects
     seen: set[tuple[str, int]] = set()
     for match in SCOPED_PACKAGE_RE.finditer(lowered):
         others = [s for s in spans if s != (match.start(), match.end())]
-        mention = classify_mention(lowered, match.start(), match.end(), match.group(0), others)
+        canonical = _package_aliases(match.group(0))[-1]
+        mention = classify_mention(
+            lowered, match.start(), match.end(), match.group(0), canonical, others
+        )
         for alias in _package_aliases(mention.name):
             if (alias, match.start()) in seen:
                 continue
@@ -764,11 +919,14 @@ def classify(text: str, known_modules: frozenset[str] = frozenset()) -> Subjects
             subjects.package_mentions.append(
                 PackageMention(
                     name=alias,
-                    role=mention.role,
+                    canonical=canonical,
+                    relation=mention.relation,
+                    state=mention.state,
                     start=mention.start,
                     end=mention.end,
                     cue=mention.cue,
                     context=mention.context,
+                    ambiguous=mention.ambiguous,
                 )
             )
 
@@ -777,21 +935,7 @@ def classify(text: str, known_modules: frozenset[str] = frozenset()) -> Subjects
         if name.startswith("node:") or any(name == m.name for m in subjects.package_mentions):
             continue
         others = [s for s in spans if s != (match.start(1), match.end(1))]
-        mention = classify_mention(lowered, match.start(1), match.end(1), name, others)
-        # `name@version` on its own says nothing about the package's role. Only
-        # an explicit install/use context makes it a dependency; otherwise it
-        # stays unresolved, like any other package we cannot classify.
-        if mention.role is PackageRole.UNRESOLVED and INSTALL_CONTEXT_RE.search(
-            lowered[max(0, match.start(1) - LOOKBEHIND) : match.start(1)]
-        ):
-            mention = PackageMention(
-                name=name,
-                role=PackageRole.DEPENDENCY,
-                start=mention.start,
-                end=mention.end,
-                cue="declared as installed",
-                context=mention.context,
-            )
+        mention = classify_mention(lowered, match.start(1), match.end(1), name, name, others)
         subjects.package_mentions.append(mention)
 
     for path in iter_source_paths(lowered):
@@ -811,6 +955,7 @@ def classify(text: str, known_modules: frozenset[str] = frozenset()) -> Subjects
         ):
             subjects.modules.add(token)
     subjects.modules -= subjects.all_packages
+    subjects.package_mentions = aggregate_states(subjects.package_mentions)
 
     return subjects
 

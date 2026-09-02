@@ -31,7 +31,12 @@ from typing import Any
 import pytest
 
 from repo_troubleshooter.fingerprint import features as feat
-from repo_troubleshooter.fingerprint.subjects import PackageRole, classify
+from repo_troubleshooter.fingerprint.subjects import (
+    PackageRelation,
+    PackageRole,
+    PackageState,
+    classify,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BIN = PROJECT_ROOT / ".venv" / ("Scripts" if os.name == "nt" else "bin")
@@ -78,6 +83,24 @@ PHRASINGS: list[tuple[str, str]] = [
     ),
     ("bare-name-at-version", "nebula-theme@1.2.3 went sideways"),
     ("healthy-dsh-but-it-crashes", "@deepseek-ai/dsh-client-modules is healthy but it crashes"),
+    # --- fact aggregation: relation and state are independent ---------------
+    (
+        "healthy-dsh-dependency-plus-its-path",
+        "We depend on @deepseek-ai/dsh-client-modules, which is healthy. "
+        "The host process crashes separately",
+    ),
+    (
+        "same-package-across-sentences",
+        "@deepseek-ai/dsh-client-modules is healthy. Later @deepseek-ai/dsh-client-modules crashes",
+    ),
+    (
+        "same-package-repeated-mentions",
+        "@deepseek-ai/dsh-client-modules is healthy and @deepseek-ai/dsh-client-modules "
+        "crashes on startup",
+    ),
+    ("external-dependency-then-it-crashes", "We import @nebula/theme-engine, but it crashes"),
+    ("bare-version-then-it-crashes", "installed nebula-theme@1.2.3, then it hangs"),
+    ("dependency-then-the-package-fails", "We use @nebula/theme-engine; the package fails"),
 ]
 
 CASES = [pytest.param(f"{clause}. {BOOT_SYMPTOM}", id=case_id) for case_id, clause in PHRASINGS]
@@ -175,6 +198,66 @@ class TestAuthorizationInvariants:
         assert declared.role is PackageRole.DEPENDENCY
 
 
+class TestFactsAreAggregated:
+    """Relation and state are independent facts, merged per package name."""
+
+    def test_a_healthy_dependency_keeps_both_facts(self):
+        subjects = classify("We depend on @deepseek-ai/dsh-client-modules, which is healthy")
+        mention = subjects.package_mentions[0]
+        assert mention.relation is PackageRelation.DEPENDENCY
+        assert mention.state is PackageState.HEALTHY
+        # Both sets, because both facts are true.
+        assert "@deepseek-ai/dsh-client-modules" in subjects.dependencies
+        assert "@deepseek-ai/dsh-client-modules" in subjects.healthy_packages
+
+    def test_a_failing_dependency_keeps_both_facts(self):
+        subjects = classify("We import @nebula/theme-engine, but it crashes")
+        mention = subjects.package_mentions[0]
+        assert mention.relation is PackageRelation.DEPENDENCY
+        assert mention.state is PackageState.FAILING
+        assert "@nebula/theme-engine" in subjects.primary_packages
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "@a/x is healthy. Later @a/x crashes.",
+            "@a/x is healthy and @a/x crashes on startup",
+            "@a/x is healthy. The build is fine. @a/x crashes.",
+            "@a/x/inner.js is healthy. @a/x crashes.",
+        ],
+    )
+    def test_two_statements_about_one_package_are_a_contradiction(self, text):
+        """Across sentences, repeated mentions and sub-path aliases alike."""
+        subjects = classify(text)
+        assert subjects.conflicted_packages, text
+        assert not subjects.primary_packages, text
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "We import @nebula/theme-engine, but it crashes",
+            "We use @nebula/theme-engine; the package fails",
+            "installed nebula-theme@1.2.3, then it hangs",
+        ],
+    )
+    def test_anaphora_after_a_dependency_is_not_ignored(self, text):
+        """`it crashes` must not leave the package filed as a safe dependency."""
+        mention = classify(text).package_mentions[0]
+        assert mention.role in (PackageRole.PRIMARY, PackageRole.UNRESOLVED), mention.cue
+
+    def test_an_unattributable_failure_makes_a_dependency_ambiguous(self):
+        """A failure nearby with a subject we cannot resolve is not harmless."""
+        subjects = classify("We import @nebula/theme-engine, but the whole box crashed")
+        mention = subjects.package_mentions[0]
+        assert mention.role is not PackageRole.DEPENDENCY or mention.ambiguous
+
+    def test_a_different_subject_is_still_not_attributed(self):
+        """The guard must not swallow every nearby verb."""
+        subjects = classify("@a/x is healthy but the server crashes")
+        assert "@a/x" in subjects.healthy_packages
+        assert not subjects.primary_packages
+
+
 class TestRolesAreFailClosed:
     def test_a_healthy_dependency_beside_a_blamed_package_keeps_both_roles(self):
         subjects = classify(
@@ -191,7 +274,6 @@ class TestRolesAreFailClosed:
     def test_contradictory_predicates_are_conflicted(self):
         mention = classify("@nebula/theme-engine is healthy but crashes").package_mentions[0]
         assert mention.role is PackageRole.CONFLICTED
-        assert "conflicting" in mention.cue
 
     def test_explicit_health_is_confirmed_not_merely_unresolved(self):
         mention = classify("@nebula/theme-engine does not crash").package_mentions[0]

@@ -75,11 +75,33 @@ decide, all measured:
   can never cancel a conflict between two blamed packages, and a query that
   names only dependencies cannot veto anything at all;
 
+* **relation and state are separate facts** - `@dsh is a healthy dependency`
+  says two things: it is used, and it is fine. A single mutually-exclusive role
+  could only keep one, and it kept the relation, so the health fact never
+  reached the gate and an explicitly cleared package still authorised an
+  upgrade. A mention now carries `relation` (dependency / direct / unknown) and
+  `state` (failing / healthy / conflicted / unknown) independently, and the
+  displayed role is derived from the pair;
+
+* **facts are aggregated per package, not per mention** - `@x is healthy.` in
+  one sentence and `@x crashes.` in another are two statements about one
+  package, so they merge into a contradiction. Aggregation is by canonical name,
+  which covers repeats, later sentences and sub-path aliases
+  (`@x/inner.js` folds into `@x`);
+
+* **an anaphor after a dependency is not ignored** - `import X, but it crashes`,
+  `use X; the package fails` and `installed X@1.2.3, then it hangs` attribute the
+  failure to X. A failure whose subject cannot be resolved, or a negation whose
+  target cannot be interpreted (`could not import X`), leaves the package
+  *ambiguous* rather than filed as a safe dependency;
+
 * **two authorizations sit above every identity rule** - not inside them, so
   no rule can route around them:
 
-  1. *exculpation* - when a report names packages, says all of them are fine,
-     and never names a culprit, **nothing** may act on it: not a shared package,
+  1. *exculpation* - reads the **state fact**, so a package called healthy
+     counts even when it is also called a dependency. When a report names
+     packages, says all of them are fine, and never names a culprit, **nothing**
+     may act on it: not a shared package,
      not a shared path, not a shared module. The shared source path was the
      tempting one, and it was the leak: the file really is the same, but the
      report had already said the package that owns it is healthy. A report that
@@ -310,9 +332,9 @@ database that is down, empty, foreign or stale fails within ~3 seconds with a
 command to run, never a traceback; MCP returns a structured error instead of
 hanging.
 
-**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **291
+**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **320
 passed**, measured. The suite has grown each round - 118, 146, 157, 178, 188,
-216, 263, now 291 with the authorization tests - so a number quoted from an
+216, 263, 291, now 320 with the fact-aggregation tests - so a number quoted from an
 earlier round no longer matches.
 `tests/test_mcp_roundtrip.py`
 drives a real MCP SDK client: lists tools, calls both, asserts CLI/MCP parity on
@@ -417,9 +439,9 @@ what the database holds, so the counts are now separate:
 
 | count | meaning | last rebuild |
 |---|---|---|
-| `rows_attempted` | (kind, value) pairs offered to the database | 31,265 |
-| `rows_inserted` | of those, actually new | 15,663 |
-| `rows_stored_total` | rows the repository holds afterwards | **15,663** |
+| `rows_attempted` | (kind, value) pairs offered to the database | 31,313 |
+| `rows_inserted` | of those, actually new | 15,687 |
+| `rows_stored_total` | rows the repository holds afterwards | **15,687** |
 
 Earlier rounds reported the attempted figure (32,882, and 19,185 before that) as
 if it were storage. It was not.
@@ -581,6 +603,36 @@ both surfaces.
 **Remaining target.** Contradiction is detected per mention. A report that
 contradicts itself across two sentences about the same package is not yet
 merged into one verdict.
+
+**Blockers.** None.
+
+---
+
+## 14. Fact aggregation, and the last of the role collapses
+
+**Current fact.** Review found four more reports that reached
+`upgrade -> dsh-v0.1.2-alpha.2`. All four came from one modelling error: role was
+a single mutually-exclusive enum, but a report states two independent things
+about a package - how it is connected, and what condition it is in.
+
+| report | what was lost |
+|---|---|
+| `@dsh is a healthy dependency. The host crashes separately.` | `dependency + healthy` collapsed to `dependency`; the health fact never reached the exculpation check |
+| `@dsh is healthy.` … `@dsh crashes.` | two mentions of one package landed in two different sets and were never merged |
+| `We import @nebula/theme-engine, but it crashes` | the anaphor was ignored, so the blamed package stayed a plain dependency |
+| `installed nebula-theme@1.2.3, then it hangs` | same, plus the version's dots truncated the predicate window |
+
+**Verification evidence.** All four now return `matched=false, action=abstain,
+target=null` through the installed CLI. The public regression set grew from 18 to
+24 phrasings, each run through the CLI *and* a freshly launched
+`repo-troubleshooter-mcp` stdio process with the surfaces agreeing; the real
+boot-graph symptom still matches and still recommends `dsh-v0.1.2-alpha.2`.
+`uv run pytest` → 320 passed.
+
+**Remaining target.** Aggregation merges states per canonical package name.
+Two packages that are genuinely different but normalise to the same name would
+merge too; no such case is known here, and the direction of the error is safe
+(more contradictions, fewer actions).
 
 **Blockers.** None.
 
