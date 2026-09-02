@@ -74,9 +74,9 @@ class TestRoleComesFromContext:
         subjects = classify("HTML did not preload @deepseek-ai/dsh-client-modules/client.js")
         assert "@deepseek-ai/dsh-client-modules" in subjects.primary_packages
 
-    def test_a_bare_mention_is_neither(self):
+    def test_a_bare_mention_is_unresolved_not_harmless(self):
         subjects = classify("see the notes in @acme/handbook for background")
-        assert "@acme/handbook" in subjects.mentioned_packages
+        assert "@acme/handbook" in subjects.unresolved_packages
         assert not subjects.primary_packages
         assert not subjects.dependencies
 

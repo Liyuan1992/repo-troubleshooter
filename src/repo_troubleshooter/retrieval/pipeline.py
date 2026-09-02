@@ -35,7 +35,8 @@ MAX_IDENTITY_CHECKS = 6
 # Feature classes that may pull a candidate into stage 1 on their own.
 CANDIDATE_FEATURE_KINDS = (
     "subject_package",
-    "subject_mentioned",
+    "subject_confirmed_non_primary",
+    "subject_unresolved",
     "subject_path",
     "subject_module",
     "error",
@@ -151,13 +152,18 @@ def _feature_channel(
     # A report about `@scope/dsh` should reach threads about the packages that
     # ship inside it. Retrieval uses the loose relation deliberately: surfacing
     # a candidate costs nothing, and the identity gate still has to accept it.
-    package_values = set(features.subject_packages) | set(features.subject_mentioned)
+    package_values = (
+        set(features.subject_packages)
+        | set(features.subject_confirmed_non_primary)
+        | set(features.subject_unresolved)
+    )
     if family is not None and package_values:
         package_values |= family.expand_for_retrieval(package_values)
 
     for kind, values in (
         ("subject_package", package_values),
-        ("subject_mentioned", package_values),
+        ("subject_confirmed_non_primary", package_values),
+        ("subject_unresolved", package_values),
         ("subject_path", features.subject_paths),
         ("subject_module", features.subject_modules),
         ("error", features.error),
@@ -256,12 +262,17 @@ def retrieve(
         )
 
     # Mark candidates whose packages belong to the same product as the query's.
-    query_packages = set(features.subject_packages) | set(features.subject_mentioned)
+    query_packages = (
+        set(features.subject_packages)
+        | set(features.subject_confirmed_non_primary)
+        | set(features.subject_unresolved)
+    )
     if query_packages:
         for candidate in merged.values():
             package_hits: list[str] = [
                 *candidate.feature_hits.get("subject_package", []),
-                *candidate.feature_hits.get("subject_mentioned", []),
+                *candidate.feature_hits.get("subject_confirmed_non_primary", []),
+                *candidate.feature_hits.get("subject_unresolved", []),
             ]
             if any(
                 family.related_for_retrieval(hit, name)

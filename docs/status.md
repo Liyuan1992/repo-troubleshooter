@@ -54,9 +54,10 @@ decide, all measured:
 
   | role | how it is decided | authority |
   |---|---|---|
-  | primary package | the report says it failed: `X crashes`, `X did not load`, `could not resolve X` | conflict is decisive |
-  | referenced dependency | the report says it is used: `depends on X`, `imports X`, `peer dependency X` - scoped or not | weakens a match, never refuses one |
-  | mentioned package | named with no cue either way | weakens a match, never refuses one |
+  | primary package | the report says it failed: `X crashes`, `X did not load`, `X: crashes`, `X stopped working` | conflict is decisive |
+  | referenced dependency | the report says it is used and says nothing bad about it | weakens a match, never refuses one |
+  | confirmed non-primary | the report says it is fine: `X is healthy`, `X does not crash` | weakens a match, never refuses one |
+  | **unresolved subject** | named, role undetermined - **the default** | **refuses a match the candidate cannot account for** |
   | source path | `loader/src/internal.ts` | vetoes only when primary packages do not already agree |
   | runtime builtin | `node:path` | can neither prove nor refuse |
   | module name | `theme-parser`, with corpus/syntax/morphology evidence | weakens a match, never refuses one |
@@ -65,6 +66,21 @@ decide, all measured:
   and only primary packages are consulted for the veto - so a shared dependency
   can never cancel a conflict between two blamed packages, and a query that
   names only dependencies cannot veto anything at all;
+
+* **the default is fail-closed** - this is the invariant that matters, because
+  every earlier round of this gate leaked the same way: a phrasing the cue
+  vocabulary did not recognise made the package a *neutral mention*, a neutral
+  mention could not refuse anything, and a familiar stack path was enough to
+  match a real incident and recommend a version change. Adding the missing
+  phrase fixed that phrasing and left the next one open.
+
+  A package whose role cannot be determined is now `unresolved_subject`, and
+  when the query carries one the candidate never names - with only a dependency,
+  a path or a symbol linking them - the match is refused. None of those say
+  *what* failed. The guard does not depend on recognising the phrasing, so a
+  twelfth unseen wording is refused for the same reason as the eleven known
+  ones. Contradictory predicates (`X is healthy but crashes`) resolve to
+  `unresolved` too, rather than to whichever cue happened to be checked first;
 
 * **negation names what it negates, and the answer depends on what that is** -
   a bare `does not` is not evidence of anything. Three cases, resolved before any
@@ -80,11 +96,23 @@ decide, all measured:
   are a *separate* vocabulary from failure verbs: reading `not working` as
   `working` inverted the answer;
 
-* **a cue speaks only for its own mention** - cues are matched against the
-  mention's own clause, anchored (a trailing cue must end the clause, a leading
-  cue must start it), and the window stops at a clause break or at another
-  package mention. Searching a fixed character window let
-  `@a/x is healthy; @b/y crashes` describe `@b/y` with `@a/x`'s health cue;
+* **a cue speaks only for its own mention** - cues are matched anchored, and a
+  mention's window stops at a sentence break or at another package mention.
+  Within that window the *predicate chain* is followed, so coordinated and
+  label-style syntax reaches the same verdict as the plain form:
+  `X starts but crashes`, `X loads, then crashes`, `X: crashes`,
+  `X, which crashes`, `X stopped working`, `X won't start`. Each predicate is
+  matched anchored at its own position, so `X is healthy but the server crashes`
+  is not read as X crashing - that clause has a different subject;
+
+* **a predicate outranks a dependency cue** - `peer dependency @scope/lib is not
+  up to date` reports a failure *of* `@scope/lib`. Treating it as a mere
+  dependency because of the leading cue hid the blame;
+
+* **an exculpation is not a match** - when every package a report names is one
+  it says is fine, and it names no culprit, a shared exception type and symbol
+  are topical similarity. A report that simply names nothing (a pasted snippet)
+  is unaffected: its rare symbols still carry identity;
 
 * **a blamed package the candidate never names is a disagreement** - a shared
   source path is not enough when the report points at a package the candidate
@@ -260,9 +288,9 @@ database that is down, empty, foreign or stale fails within ~3 seconds with a
 command to run, never a traceback; MCP returns a structured error instead of
 hanging.
 
-**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **216
+**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **263
 passed**, measured. The suite has grown each round - 118, 146, 157, 178, 188,
-now 216 with the cue-scope and stdio-MCP tests - so a number quoted from an
+216, now 263 with the fail-closed identity tests - so a number quoted from an
 earlier round no longer matches.
 `tests/test_mcp_roundtrip.py`
 drives a real MCP SDK client: lists tools, calls both, asserts CLI/MCP parity on
@@ -283,8 +311,8 @@ payloads beyond the current coverage note.
 ## 6. Data
 
 **Current fact.** 550 discussions, 1510 comments, 123 doc files, 7 releases,
-275 package manifests, **15,673 stored symptom signatures** (measured after the
-rebuild at extractor version 7; earlier rounds reported inflated figures - see
+275 package manifests, **15,663 stored symptom signatures** (measured after the
+rebuild at extractor version 8; earlier rounds reported inflated figures - see
 the row-accounting note below). Discussion coverage is still partial and reports `degraded`.
 A paced backfill (`rt sync … --backfill-pages N`) walks older history a few pages
 at a time, persists its GraphQL cursor, resumes where it stopped, and never claims
@@ -367,9 +395,9 @@ what the database holds, so the counts are now separate:
 
 | count | meaning | last rebuild |
 |---|---|---|
-| `rows_attempted` | (kind, value) pairs offered to the database | 31,285 |
-| `rows_inserted` | of those, actually new | 15,673 |
-| `rows_stored_total` | rows the repository holds afterwards | **15,673** |
+| `rows_attempted` | (kind, value) pairs offered to the database | 31,265 |
+| `rows_inserted` | of those, actually new | 15,663 |
+| `rows_stored_total` | rows the repository holds afterwards | **15,663** |
 
 Earlier rounds reported the attempted figure (32,882, and 19,185 before that) as
 if it were storage. It was not.
@@ -450,6 +478,50 @@ in the same file, so the fix cannot be a blanket refusal.
 
 **Remaining target.** The clause splitter is punctuation and conjunction based.
 A report written as one long clause can still put two packages in one window.
+
+**Blockers.** None.
+
+---
+
+## 12. The identity default, and why it had to change
+
+**Current fact.** Four rounds of review found four different phrasings that
+matched a real incident and recommended a version change when they should have
+abstained. Each was fixed by teaching the cue vocabulary a new phrase, and each
+fix left the next phrasing open, because the *default* was unsafe: anything the
+vocabulary did not recognise became a neutral mention, and a neutral mention
+could not refuse anything.
+
+The default is now `unresolved_subject`, and the gate refuses when the query
+carries an unresolved package the candidate never names and the only links are a
+dependency, a path or a symbol.
+
+**Verification evidence.** `tests/test_failclosed_identity.py` runs eleven
+phrasings of the same external-package report - each carrying the real
+incident's behaviour, stack path, symbol and exception - through the installed
+CLI subprocess *and* a freshly launched `repo-troubleshooter-mcp` stdio process:
+
+| phrasing | | phrasing | |
+|---|---|---|---|
+| `X is not working` | ✓ | `X: crashes` | ✓ |
+| `@dsh is healthy; X crashes` | ✓ | `X, which crashes` | ✓ |
+| `peer dependency X is not up to date` | ✓ | `X stopped working` | ✓ |
+| `X starts but crashes` | ✓ | `X won't start` | ✓ |
+| `X loads, then crashes` | ✓ | `X went sideways on us` | ✓ |
+| `X is healthy but crashes` | ✓ | | |
+
+All eleven return `matched=false`, `action=abstain`, `target=null` on both
+surfaces, the surfaces agree, and no unsafe action appears anywhere in the set.
+A twelfth, deliberately unseen wording is asserted to be refused too - by the
+invariant rather than by a phrase.
+
+The same file asserts the real boot-graph symptom still matches and still
+recommends `dsh-v0.1.2-alpha.2` on both surfaces, so the guard cannot be
+satisfied by refusing everything.
+
+**Remaining target.** The predicate chain is punctuation and conjunction based.
+A single clause with two subjects and no coordinator can still be misread; that
+would show up as `unresolved`, which is the safe direction.
 
 **Blockers.** None.
 

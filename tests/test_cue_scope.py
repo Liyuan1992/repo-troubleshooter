@@ -134,7 +134,6 @@ class TestNegationIsResolvedBeforeHealth:
         nebula = mentions["@nebula/theme-engine"]
         assert nebula.role is PackageRole.PRIMARY
         assert "not working" in nebula.cue
-        assert not nebula.cue.startswith("healthy:")
 
     @pytest.mark.parametrize(
         "text",
@@ -152,9 +151,6 @@ class TestNegationIsResolvedBeforeHealth:
     def test_every_negated_positive_state_is_a_failure(self, text):
         mention = classify(text).package_mentions[0]
         assert mention.role is PackageRole.PRIMARY, mention.cue
-        # The cue quotes the sentence, so it may contain the word "healthy";
-        # what matters is that it is not recorded *as* a health cue.
-        assert not mention.cue.startswith("healthy:"), mention.cue
 
     @pytest.mark.parametrize(
         "text",
@@ -162,8 +158,7 @@ class TestNegationIsResolvedBeforeHealth:
     )
     def test_negated_failure_verbs_stay_health(self, text):
         mention = classify(text).package_mentions[0]
-        assert mention.role is PackageRole.MENTIONED
-        assert mention.cue.startswith("healthy:")
+        assert mention.role is PackageRole.CONFIRMED_NON_PRIMARY
 
     @pytest.mark.parametrize(
         "text",
@@ -177,22 +172,20 @@ class TestNegationIsResolvedBeforeHealth:
         mentions = classify(CASE_NOT_UP_TO_DATE).package_mentions
         assert mentions
         for mention in mentions:
-            assert not mention.cue.startswith("healthy:"), mention.cue
-            assert mention.role is not PackageRole.PRIMARY or "not up to date" in mention.cue
+            assert mention.role is not PackageRole.CONFIRMED_NON_PRIMARY, mention.cue
 
 
 class TestCueDoesNotCrossMentions:
     def test_health_does_not_bleed_onto_the_next_package(self):
         mentions = {m.name: m for m in classify(CASE_HEALTH_BLEED).package_mentions}
-        assert mentions["@deepseek-ai/dsh-client-modules"].role is PackageRole.MENTIONED
+        assert mentions["@deepseek-ai/dsh-client-modules"].role is PackageRole.CONFIRMED_NON_PRIMARY
         nebula = mentions["@nebula/theme-engine"]
         assert nebula.role is PackageRole.PRIMARY
-        assert not nebula.cue.startswith("healthy:")
 
     def test_a_failure_does_not_bleed_backwards_either(self):
         text = "@scope/first is fine. @scope/second crashes"
         mentions = {m.name: m for m in classify(text).package_mentions}
-        assert mentions["@scope/first"].role is PackageRole.MENTIONED
+        assert mentions["@scope/first"].role is PackageRole.CONFIRMED_NON_PRIMARY
         assert mentions["@scope/second"].role is PackageRole.PRIMARY
 
     def test_the_external_package_keeps_the_primary_role(self):

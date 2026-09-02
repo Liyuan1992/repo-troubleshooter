@@ -335,8 +335,11 @@ class SymptomFeatures:
     # Packages the report says are merely *used* - `depends on`, `imports`,
     # `peer dependency`. Scoped or not: being scoped proves nothing.
     subject_dependencies: set[str] = field(default_factory=set)
-    # Packages named with no cue either way. Useful for retrieval, never a veto.
-    subject_mentioned: set[str] = field(default_factory=set)
+    # Packages the report says are fine: `X is healthy`, `X does not crash`.
+    subject_confirmed_non_primary: set[str] = field(default_factory=set)
+    # Packages named where the role could not be determined. Not harmless: the
+    # identity gate treats an unrelated one as a reason to refuse.
+    subject_unresolved: set[str] = field(default_factory=set)
     subject_paths: set[str] = field(default_factory=set)
     subject_builtins: set[str] = field(default_factory=set)
     subject_modules: set[str] = field(default_factory=set)
@@ -355,7 +358,8 @@ class SymptomFeatures:
             self.subject_packages
             | self.subject_paths
             | self.subject_dependencies
-            | self.subject_mentioned
+            | self.subject_confirmed_non_primary
+            | self.subject_unresolved
             | self.subject_builtins
             | self.subject_modules
         )
@@ -379,7 +383,8 @@ class SymptomFeatures:
         return {
             "subject_packages": sorted(self.subject_packages),
             "subject_dependencies": sorted(self.subject_dependencies),
-            "subject_mentioned": sorted(self.subject_mentioned),
+            "subject_confirmed_non_primary": sorted(self.subject_confirmed_non_primary),
+            "subject_unresolved": sorted(self.subject_unresolved),
             "package_mentions": self.package_mentions,
             "subject_paths": sorted(self.subject_paths),
             "subject_builtins": sorted(self.subject_builtins),
@@ -397,7 +402,8 @@ class SymptomFeatures:
         for kind, values in (
             ("subject_package", self.subject_packages),
             ("subject_dependency", self.subject_dependencies),
-            ("subject_mentioned", self.subject_mentioned),
+            ("subject_confirmed_non_primary", self.subject_confirmed_non_primary),
+            ("subject_unresolved", self.subject_unresolved),
             ("subject_path", self.subject_paths),
             ("subject_builtin", self.subject_builtins),
             ("subject_module", self.subject_modules),
@@ -476,7 +482,8 @@ def extract(text: str | None, *, known_modules: frozenset[str] = frozenset()) ->
         error=error,
         subject_packages=subjects.primary_packages,
         subject_dependencies=subjects.dependencies,
-        subject_mentioned=subjects.mentioned_packages,
+        subject_confirmed_non_primary=subjects.confirmed_non_primary,
+        subject_unresolved=subjects.unresolved_packages,
         package_mentions=[m.to_json() for m in subjects.package_mentions],
         subject_paths=subjects.paths,
         subject_builtins=subjects.builtins,
@@ -494,7 +501,8 @@ def merge(*feature_sets: SymptomFeatures) -> SymptomFeatures:
         merged.error |= features.error
         merged.subject_packages |= features.subject_packages
         merged.subject_dependencies |= features.subject_dependencies
-        merged.subject_mentioned |= features.subject_mentioned
+        merged.subject_confirmed_non_primary |= features.subject_confirmed_non_primary
+        merged.subject_unresolved |= features.subject_unresolved
         merged.subject_paths |= features.subject_paths
         merged.package_mentions += features.package_mentions
         merged.subject_builtins |= features.subject_builtins

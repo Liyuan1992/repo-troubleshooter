@@ -242,8 +242,10 @@ def load_features(session: Session, object_id: int) -> SymptomFeatures:
             features.subject_paths.add(value)
         elif kind == "subject_dependency":
             features.subject_dependencies.add(value)
-        elif kind == "subject_mentioned":
-            features.subject_mentioned.add(value)
+        elif kind == "subject_confirmed_non_primary":
+            features.subject_confirmed_non_primary.add(value)
+        elif kind == "subject_unresolved":
+            features.subject_unresolved.add(value)
         elif kind == "subject_builtin":
             features.subject_builtins.add(value)
         elif kind == "subject_module":

@@ -202,15 +202,19 @@ def evaluate(
         related_packages = sorted({f"{a} ~ {b}" for a, b in related})
         shared["related_packages"] = related_packages
 
+    candidate_any_package = (
+        candidate.subject_packages
+        | candidate.subject_dependencies
+        | candidate.subject_confirmed_non_primary
+        | candidate.subject_unresolved
+    )
+
     # --- rule 2a-bis: the query blames a package this candidate never names --
     #
     # A shared source path is not enough when the report points at a package the
     # candidate does not discuss at all. `@nebula/theme-engine is not working`
     # plus a familiar stack path is a report about Nebula, not about the thread
     # that blames a different package.
-    candidate_any_package = (
-        candidate.subject_packages | candidate.subject_dependencies | candidate.subject_mentioned
-    )
     if (
         query.subject_packages
         and candidate_any_package
@@ -227,6 +231,36 @@ def evaluate(
                 f"{sorted(query.subject_packages)[:3]}, which the candidate never names "
                 f"(it discusses {sorted(candidate_any_package)[:3]}); "
                 "a shared source path or symbol does not make them the same subject"
+            ],
+        )
+
+    # --- rule 2a-ter: an unresolved package the candidate does not know -----
+    #
+    # The safety default. Every previous round of this gate leaked through a
+    # phrasing the cue vocabulary did not recognise: the package became a
+    # neutral mention, and a neutral mention cannot refuse anything. So when the
+    # query names a package whose role we could not determine, and the candidate
+    # never names it, the only things left connecting them are a dependency, a
+    # path or a symbol - none of which say *what* broke. That is not enough to
+    # call it the same incident, and it is certainly not enough to tell someone
+    # to upgrade.
+    unresolved_and_unknown = {
+        name
+        for name in query.subject_unresolved
+        if name not in candidate_any_package
+        and not family.any_related({name}, candidate_any_package)
+    }
+    identity_from_subject = bool(shared_package) or bool(shared.get("related_packages"))
+    if unresolved_and_unknown and not identity_from_subject:
+        return IdentityVerdict(
+            accepted=False,
+            score=score,
+            rejection="unresolved_subject",
+            shared=shared,
+            reasons=[
+                f"this report names {sorted(unresolved_and_unknown)[:3]} without saying what "
+                "role it plays, and the candidate never mentions it; the only links are a "
+                "dependency, a path or a symbol, which do not establish what failed"
             ],
         )
 
@@ -258,11 +292,11 @@ def evaluate(
     if query.subject_dependencies and candidate.subject_dependencies and not shared_dependency:
         weakened_by.append("referenced dependencies disagree")
     if (
-        query.subject_mentioned
-        and candidate.subject_mentioned
-        and not (query.subject_mentioned & candidate.subject_mentioned)
+        query.subject_unresolved
+        and candidate.subject_unresolved
+        and not (query.subject_unresolved & candidate.subject_unresolved)
     ):
-        weakened_by.append("packages mentioned without a role disagree")
+        weakened_by.append("packages named without a determinable role disagree")
 
     # --- rule 3: which combination of classes is enough to mean "same" -----
     rule: str | None = None
@@ -323,6 +357,42 @@ def evaluate(
             reasons=[
                 f"{'; '.join(weakened_by)}, so a match resting on {rule} is not enough "
                 "to call these the same incident"
+            ],
+        )
+
+    # Weak rules rest on an exception type and a symbol - things every caller
+    # shares. They are only enough when the report actually names what failed.
+    # "Something crashed, but @acme/theme-kit is healthy" names no culprit at
+    # all, and a familiar TypeError must not supply one.
+    WEAK_RULES = (
+        "error_type_plus_second_class",
+        "two_independent_symbols",
+        "symbol_plus_behaviour",
+    )
+    names_a_failing_subject = bool(
+        query.subject_packages
+        or query.subject_unresolved
+        or query.subject_paths
+        or query.subject_modules
+    )
+    # The case this guards: the report names packages, says every one of them is
+    # fine, and names no culprit. The thing that failed is therefore something
+    # it never named, and a familiar exception must not supply one. A report
+    # that simply names nothing (a pasted snippet) is not affected - its rare
+    # symbols still carry identity.
+    exculpated_only = bool(query.subject_confirmed_non_primary) and not names_a_failing_subject
+    if rule in WEAK_RULES and exculpated_only:
+        return IdentityVerdict(
+            accepted=False,
+            score=score,
+            rejection="insufficient_identity_evidence",
+            shared=shared,
+            rule=rule,
+            weakened_by=weakened_by,
+            reasons=[
+                "every package this report names is one it says is fine, and it names no "
+                f"culprit ({sorted(query.subject_confirmed_non_primary)[:3]}); a shared "
+                "exception type and symbol are topical similarity, not identity"
             ],
         )
 
