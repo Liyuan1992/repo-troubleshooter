@@ -66,16 +66,33 @@ decide, all measured:
   can never cancel a conflict between two blamed packages, and a query that
   names only dependencies cannot veto anything at all;
 
-* **negation has to name the action, and health outranks it** - a bare
-  `does not` is not evidence of anything. The negated verb must be named, and
-  which verb it is decides the meaning: negating a *failure* verb is good news
-  (`X does not crash` leaves X merely mentioned) while negating an *expected
-  action* is the failure (`X did not preload` makes X primary). An explicit
-  health cue - `is healthy`, `is not failing`, `resolved`, `fine` - outranks any
-  failure word that merely stands nearby, so `something crashed, but @scope/lib
-  is healthy` does not blame `@scope/lib`. The same reasoning fixed a cause
-  signal: `peer dependency ... is healthy` no longer counts as
-  `version_conflict`; a conflict word has to be present;
+* **negation names what it negates, and the answer depends on what that is** -
+  a bare `does not` is not evidence of anything. Three cases, resolved before any
+  bare health cue is considered:
+
+  | sentence | negated thing | verdict |
+  |---|---|---|
+  | `X does not crash` | a failure verb | health - X is not the subject |
+  | `X did not load` | an expected action | failure - X is primary |
+  | `X is not working` | a positive state | failure - X is primary |
+
+  The third case is why `working`, `healthy`, `stable`, `up to date` and the rest
+  are a *separate* vocabulary from failure verbs: reading `not working` as
+  `working` inverted the answer;
+
+* **a cue speaks only for its own mention** - cues are matched against the
+  mention's own clause, anchored (a trailing cue must end the clause, a leading
+  cue must start it), and the window stops at a clause break or at another
+  package mention. Searching a fixed character window let
+  `@a/x is healthy; @b/y crashes` describe `@b/y` with `@a/x`'s health cue;
+
+* **a blamed package the candidate never names is a disagreement** - a shared
+  source path is not enough when the report points at a package the candidate
+  does not discuss at all. `@nebula/theme-engine is not working` plus a familiar
+  stack path is a report about Nebula;
+
+  The same reasoning fixed a cause signal: `peer dependency ... is healthy` no
+  longer counts as `version_conflict`; a conflict word has to be present;
 
 * **packages that ship inside one another are not a conflict** - the product
   family is read from the repository's own `package.json` manifests at sync
@@ -129,7 +146,12 @@ sentence, spans and cues preserved, and the manifest-driven product relation.
 
 `tests/test_cue_endtoend.py` re-checks the same semantics **through the real
 interfaces** rather than by calling the gate: the installed console script as a
-subprocess and the MCP server over the protocol, asserting they agree. It covers
+subprocess and the MCP server over the protocol, asserting they agree. Its MCP
+half connects to the server object in-process, which exercises the protocol but
+not the installed binary - `tests/test_cue_scope.py` covers that gap by
+launching `repo-troubleshooter-mcp` as a real stdio subprocess through
+`StdioServerParameters`, and checks row counts across all 12 business tables
+before and after that session. It covers
 bare negation, negated failure verbs, negated expected actions, health cues,
 healthy peer dependencies, and that every family-related candidate that reached
 stage 1 was actually evaluated.
@@ -238,10 +260,10 @@ database that is down, empty, foreign or stale fails within ~3 seconds with a
 command to run, never a traceback; MCP returns a structured error instead of
 hanging.
 
-**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **188
-passed**, measured. The suite has grown each round - 118, 146, 157, 178, now 188
-with the end-to-end cue tests - so a number quoted from an earlier round no
-longer matches.
+**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **216
+passed**, measured. The suite has grown each round - 118, 146, 157, 178, 188,
+now 216 with the cue-scope and stdio-MCP tests - so a number quoted from an
+earlier round no longer matches.
 `tests/test_mcp_roundtrip.py`
 drives a real MCP SDK client: lists tools, calls both, asserts CLI/MCP parity on
 status, action, target, `incident.matched`, `stages.stopped_at` and the
@@ -261,8 +283,8 @@ payloads beyond the current coverage note.
 ## 6. Data
 
 **Current fact.** 550 discussions, 1510 comments, 123 doc files, 7 releases,
-275 package manifests, **15,675 stored symptom signatures** (measured after the
-rebuild at extractor version 6; earlier rounds reported inflated figures - see
+275 package manifests, **15,673 stored symptom signatures** (measured after the
+rebuild at extractor version 7; earlier rounds reported inflated figures - see
 the row-accounting note below). Discussion coverage is still partial and reports `degraded`.
 A paced backfill (`rt sync … --backfill-pages N`) walks older history a few pages
 at a time, persists its GraphQL cursor, resumes where it stopped, and never claims
@@ -345,16 +367,16 @@ what the database holds, so the counts are now separate:
 
 | count | meaning | last rebuild |
 |---|---|---|
-| `rows_attempted` | (kind, value) pairs offered to the database | 31,289 |
-| `rows_inserted` | of those, actually new | 15,675 |
-| `rows_stored_total` | rows the repository holds afterwards | **15,675** |
+| `rows_attempted` | (kind, value) pairs offered to the database | 31,285 |
+| `rows_inserted` | of those, actually new | 15,673 |
+| `rows_stored_total` | rows the repository holds afterwards | **15,673** |
 
 Earlier rounds reported the attempted figure (32,882, and 19,185 before that) as
 if it were storage. It was not.
 
-By kind, after the cue rebuild: structural 5,142; behavior 4,666; component
-2,073; subject_module 1,469; subject_mentioned 820; error 575; subject_path 557;
-subject_dependency 173; subject_builtin 94; cause 70; **subject_package 36**.
+By kind, after the cue-scope rebuild: subject_package **33**;
+subject_dependency 173; subject_mentioned 821; cause 70; the remaining kinds are
+unchanged.
 That last number is the point of the rework: a package counts as the subject
 only where a report actually blames it, so package identity is rare and precise
 rather than granted by token shape. It rose from 18 to 36 when negated expected
@@ -389,6 +411,45 @@ round because the existing cases all supplied a runtime.
 
 **Remaining target.** None; the missing-runtime path is now a stated reason
 rather than a verdict about the version.
+
+**Blockers.** None.
+
+---
+
+## 11. Three cue-scope defects, found by review
+
+All three produced a *confident wrong answer* rather than an abstention, which
+makes them the worst class of defect this product can have.
+
+| input | was | now |
+|---|---|---|
+| `@nebula/theme-engine is not working`, importing a healthy DSH dependency, with a familiar boot symptom | matched #5084, recommended `upgrade -> dsh-v0.1.2-alpha.2` | no match, no version action |
+| `@deepseek-ai/dsh-client-modules is healthy; @nebula/theme-engine crashes...` | both packages became `mentioned`, matched #5084, upgraded | DSH `mentioned`, Nebula `primary`, no match |
+| `peer dependency @scope/lib is not up to date` | cue `healthy: up to date` | no health cue |
+
+**Root causes, all structural rather than vocabulary:**
+
+1. the health vocabulary had no negation guard, so `not working` matched
+   `working`;
+2. health cues were found with an unanchored search over a fixed character
+   window, so one package's cue reached the next mention;
+3. the health check ran *before* the negation check, so it won when it should
+   not have.
+
+A fourth surfaced while fixing them: with the roles corrected, the surprise
+cases still matched through `source_path_plus_second_class`, because sharing a
+stack path was enough even though the report blamed a package the candidate
+never mentions. That is now its own refusal.
+
+**Verification evidence.** `tests/test_cue_scope.py`: 28 tests covering the rule
+directly, then every surprise case through the installed CLI subprocess *and* a
+freshly launched `repo-troubleshooter-mcp` stdio process, asserting the two
+agree and that no business table changed across the MCP session. The case that
+should still match - the real boot-graph symptom - is asserted on both surfaces
+in the same file, so the fix cannot be a blanket refusal.
+
+**Remaining target.** The clause splitter is punctuation and conjunction based.
+A report written as one long clause can still put two packages in one window.
 
 **Blockers.** None.
 

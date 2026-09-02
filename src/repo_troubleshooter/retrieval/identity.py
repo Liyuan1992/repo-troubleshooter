@@ -202,6 +202,34 @@ def evaluate(
         related_packages = sorted({f"{a} ~ {b}" for a, b in related})
         shared["related_packages"] = related_packages
 
+    # --- rule 2a-bis: the query blames a package this candidate never names --
+    #
+    # A shared source path is not enough when the report points at a package the
+    # candidate does not discuss at all. `@nebula/theme-engine is not working`
+    # plus a familiar stack path is a report about Nebula, not about the thread
+    # that blames a different package.
+    candidate_any_package = (
+        candidate.subject_packages | candidate.subject_dependencies | candidate.subject_mentioned
+    )
+    if (
+        query.subject_packages
+        and candidate_any_package
+        and not (query.subject_packages & candidate_any_package)
+        and not family.any_related(query.subject_packages, candidate_any_package)
+    ):
+        return IdentityVerdict(
+            accepted=False,
+            score=score,
+            rejection="different_subject",
+            shared=shared,
+            reasons=[
+                "this report blames "
+                f"{sorted(query.subject_packages)[:3]}, which the candidate never names "
+                f"(it discusses {sorted(candidate_any_package)[:3]}); "
+                "a shared source path or symbol does not make them the same subject"
+            ],
+        )
+
     # --- rule 2b: source-path conflict, unless the packages already agree --
     if not shared_package and query.subject_paths and candidate.subject_paths and not shared_path:
         return IdentityVerdict(

@@ -2,8 +2,10 @@
 
 Two things are being proven:
 
-1. The server actually speaks MCP - a genuine client connects, lists tools and
-   calls them. No hand-rolled stand-in for the protocol.
+1. The server actually speaks MCP - a genuine SDK client connects, lists tools
+   and calls them. It connects to the server object **in this process**, which
+   exercises the protocol but not the installed binary; `tests/test_cue_scope.py`
+   covers that by launching `repo-troubleshooter-mcp` as a stdio subprocess.
 2. The MCP facade is thin - for the same request, MCP and the CLI produce the
    same structured decision. If they ever diverge, one of them has grown its own
    logic, which is the failure this test exists to catch.
