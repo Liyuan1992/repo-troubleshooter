@@ -244,6 +244,8 @@ def load_features(session: Session, object_id: int) -> SymptomFeatures:
             features.subject_dependencies.add(value)
         elif kind == "subject_confirmed_non_primary":
             features.subject_confirmed_non_primary.add(value)
+        elif kind == "subject_conflicted":
+            features.subject_conflicted.add(value)
         elif kind == "subject_unresolved":
             features.subject_unresolved.add(value)
         elif kind == "subject_builtin":

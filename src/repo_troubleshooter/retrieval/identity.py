@@ -166,6 +166,53 @@ def evaluate(
         + _weighted(shared_component, CLASS_WEIGHTS["component"], doc_freq, corpus_objects)
     )
 
+    # --- rule 0b: the report clears every package it names --------------------
+    #
+    # When a report names packages, says all of them are fine, and never names a
+    # culprit, whatever failed is something it did not name. No rule may act on
+    # that - not a shared package, not a shared path, not a shared module. The
+    # shared source path is the tempting one: it is genuinely the same file, but
+    # the report already told us the package that owns it is healthy.
+    #
+    # A report that names no package at all (a pasted log) is deliberately not
+    # covered: its rare symbols still carry identity, which is how
+    # snippet-only incidents are matched.
+    if (
+        query.subject_confirmed_non_primary
+        and not query.subject_packages
+        and not query.subject_unresolved
+        and not query.subject_conflicted
+    ):
+        return IdentityVerdict(
+            accepted=False,
+            score=score,
+            rejection="exculpated_subject",
+            shared=shared,
+            reasons=[
+                "this report clears every package it names "
+                f"({sorted(query.subject_confirmed_non_primary)[:3]}) and never says what "
+                "failed, so nothing here identifies an incident - not a shared path, module "
+                "or symbol"
+            ],
+        )
+
+    # --- rule 0c: the report contradicts itself about a package ---------------
+    #
+    # `X is healthy but crashes` says something is wrong *and* that it is not.
+    # That cannot authorise an action even when the candidate names the very
+    # same package.
+    if query.subject_conflicted:
+        return IdentityVerdict(
+            accepted=False,
+            score=score,
+            rejection="conflicted_subject",
+            shared=shared,
+            reasons=[
+                "this report says contradictory things about "
+                f"{sorted(query.subject_conflicted)[:3]}, so it cannot establish what failed"
+            ],
+        )
+
     # --- rule 1: an explicitly stated cause decides before anything else ---
     if query.causes:
         if not query.causes & candidate.causes:
@@ -206,6 +253,7 @@ def evaluate(
         candidate.subject_packages
         | candidate.subject_dependencies
         | candidate.subject_confirmed_non_primary
+        | candidate.subject_conflicted
         | candidate.subject_unresolved
     )
 
@@ -357,42 +405,6 @@ def evaluate(
             reasons=[
                 f"{'; '.join(weakened_by)}, so a match resting on {rule} is not enough "
                 "to call these the same incident"
-            ],
-        )
-
-    # Weak rules rest on an exception type and a symbol - things every caller
-    # shares. They are only enough when the report actually names what failed.
-    # "Something crashed, but @acme/theme-kit is healthy" names no culprit at
-    # all, and a familiar TypeError must not supply one.
-    WEAK_RULES = (
-        "error_type_plus_second_class",
-        "two_independent_symbols",
-        "symbol_plus_behaviour",
-    )
-    names_a_failing_subject = bool(
-        query.subject_packages
-        or query.subject_unresolved
-        or query.subject_paths
-        or query.subject_modules
-    )
-    # The case this guards: the report names packages, says every one of them is
-    # fine, and names no culprit. The thing that failed is therefore something
-    # it never named, and a familiar exception must not supply one. A report
-    # that simply names nothing (a pasted snippet) is not affected - its rare
-    # symbols still carry identity.
-    exculpated_only = bool(query.subject_confirmed_non_primary) and not names_a_failing_subject
-    if rule in WEAK_RULES and exculpated_only:
-        return IdentityVerdict(
-            accepted=False,
-            score=score,
-            rejection="insufficient_identity_evidence",
-            shared=shared,
-            rule=rule,
-            weakened_by=weakened_by,
-            reasons=[
-                "every package this report names is one it says is fine, and it names no "
-                f"culprit ({sorted(query.subject_confirmed_non_primary)[:3]}); a shared "
-                "exception type and symbol are topical similarity, not identity"
             ],
         )
 

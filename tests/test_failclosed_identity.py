@@ -59,6 +59,25 @@ PHRASINGS: list[tuple[str, str]] = [
     ("wont-start", "@nebula/theme-engine won't start"),
     ("unknown-phrasing", "@nebula/theme-engine went sideways on us"),
     ("contradictory", "@nebula/theme-engine is healthy but crashes"),
+    # --- authorization invariants, added after review found them ------------
+    (
+        "exculpated-dsh-with-its-own-path",
+        "@deepseek-ai/dsh-client-modules is healthy and does not fail. "
+        "The host process crashes separately",
+    ),
+    (
+        "failed-to-install-external",
+        "failed to install @nebula/theme-engine; we depend on "
+        "@deepseek-ai/dsh-client-modules, which is healthy",
+    ),
+    ("could-not-import-external", "could not import @nebula/theme-engine"),
+    ("cannot-require-external", "cannot require @nebula/theme-engine"),
+    (
+        "contradictory-same-dsh-package",
+        "@deepseek-ai/dsh-client-modules is healthy but crashes",
+    ),
+    ("bare-name-at-version", "nebula-theme@1.2.3 went sideways"),
+    ("healthy-dsh-but-it-crashes", "@deepseek-ai/dsh-client-modules is healthy but it crashes"),
 ]
 
 CASES = [pytest.param(f"{clause}. {BOOT_SYMPTOM}", id=case_id) for case_id, clause in PHRASINGS]
@@ -117,14 +136,61 @@ def stdio_mcp_diagnose(error: str, *, version: str = "0.1.2-alpha.1") -> dict[st
     return payload["result"]
 
 
+class TestAuthorizationInvariants:
+    """Roles alone are not enough: some reports may not authorise any action."""
+
+    def test_a_report_that_clears_every_package_it_names(self):
+        """Even the incident's own source path cannot rescue it."""
+        features = feat.extract(
+            "@deepseek-ai/dsh-client-modules is healthy and does not fail. The host process "
+            "crashes separately. " + BOOT_SYMPTOM
+        )
+        assert features.subject_confirmed_non_primary == {"@deepseek-ai/dsh-client-modules"}
+        assert not features.subject_packages
+        assert not features.subject_unresolved
+
+    @pytest.mark.parametrize(
+        "clause",
+        [
+            "failed to install @nebula/theme-engine",
+            "could not import @nebula/theme-engine",
+            "cannot require @nebula/theme-engine",
+        ],
+    )
+    def test_a_failure_before_the_mention_outranks_the_dependency_cue(self, clause):
+        mention = classify(clause).package_mentions[0]
+        assert mention.role in (PackageRole.PRIMARY, PackageRole.UNRESOLVED), mention.cue
+        assert mention.role is not PackageRole.DEPENDENCY
+
+    def test_contradiction_is_its_own_role(self):
+        mention = classify(
+            "@deepseek-ai/dsh-client-modules is healthy but crashes"
+        ).package_mentions[0]
+        assert mention.role is PackageRole.CONFLICTED
+
+    def test_bare_name_at_version_is_not_automatically_a_dependency(self):
+        unknown = classify("nebula-theme@1.2.3 went sideways").package_mentions[0]
+        assert unknown.role is PackageRole.UNRESOLVED
+        declared = classify("we installed nebula-theme@1.2.3").package_mentions[0]
+        assert declared.role is PackageRole.DEPENDENCY
+
+
 class TestRolesAreFailClosed:
+    def test_a_healthy_dependency_beside_a_blamed_package_keeps_both_roles(self):
+        subjects = classify(
+            "failed to install @nebula/theme-engine; we depend on "
+            "@deepseek-ai/dsh-client-modules, which is healthy"
+        )
+        assert "@nebula/theme-engine" in subjects.primary_packages
+        assert "@deepseek-ai/dsh-client-modules" in subjects.dependencies
+
     def test_an_unrecognised_phrasing_is_unresolved_not_harmless(self):
         mention = classify("@nebula/theme-engine went sideways on us").package_mentions[0]
         assert mention.role is PackageRole.UNRESOLVED
 
-    def test_contradictory_predicates_are_unresolved(self):
+    def test_contradictory_predicates_are_conflicted(self):
         mention = classify("@nebula/theme-engine is healthy but crashes").package_mentions[0]
-        assert mention.role is PackageRole.UNRESOLVED
+        assert mention.role is PackageRole.CONFLICTED
         assert "conflicting" in mention.cue
 
     def test_explicit_health_is_confirmed_not_merely_unresolved(self):
@@ -150,17 +216,11 @@ class TestRolesAreFailClosed:
         mention = classify("@a/x is healthy but the server crashes").package_mentions[0]
         assert mention.role is PackageRole.CONFIRMED_NON_PRIMARY
 
-    def test_every_phrasing_keeps_the_external_package_out_of_dsh(self):
+    def test_no_phrasing_leaves_an_actionable_dsh_subject(self):
+        """Whatever the wording, the report must not end up blaming DSH."""
         for case_id, clause in PHRASINGS:
             features = feat.extract(f"{clause}. {BOOT_SYMPTOM}")
-            named = (
-                features.subject_packages
-                | features.subject_unresolved
-                | features.subject_confirmed_non_primary
-                | features.subject_dependencies
-            )
-            assert "@nebula/theme-engine" in named, case_id
-            assert "@nebula/theme-engine" not in features.subject_confirmed_non_primary, case_id
+            assert "@deepseek-ai/dsh-client-modules" not in features.subject_packages, case_id
 
 
 @pytest.mark.db

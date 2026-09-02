@@ -56,8 +56,16 @@ decide, all measured:
   |---|---|---|
   | primary package | the report says it failed: `X crashes`, `X did not load`, `X: crashes`, `X stopped working` | conflict is decisive |
   | referenced dependency | the report says it is used and says nothing bad about it | weakens a match, never refuses one |
-  | confirmed non-primary | the report says it is fine: `X is healthy`, `X does not crash` | weakens a match, never refuses one |
+  | confirmed non-primary | the report says it is fine: `X is healthy`, `X does not crash` | weakens a match; if it is the *only* kind named, nothing may act |
+  | **conflicted subject** | the report contradicts itself: `X is healthy but crashes` | **never authorises an action** |
   | **unresolved subject** | named, role undetermined - **the default** | **refuses a match the candidate cannot account for** |
+
+  Roles are read in one order, and it matters: predicates on *both* sides of a
+  mention outrank a dependency cue, because `failed to install X` and
+  `could not import X` are reports about X, not statements that X is used. A
+  bare `name@version` is only a dependency when the sentence says it is
+  installed or used; otherwise it stays unresolved like anything else we cannot
+  classify;
   | source path | `loader/src/internal.ts` | vetoes only when primary packages do not already agree |
   | runtime builtin | `node:path` | can neither prove nor refuse |
   | module name | `theme-parser`, with corpus/syntax/morphology evidence | weakens a match, never refuses one |
@@ -66,6 +74,20 @@ decide, all measured:
   and only primary packages are consulted for the veto - so a shared dependency
   can never cancel a conflict between two blamed packages, and a query that
   names only dependencies cannot veto anything at all;
+
+* **two authorizations sit above every identity rule** - not inside them, so
+  no rule can route around them:
+
+  1. *exculpation* - when a report names packages, says all of them are fine,
+     and never names a culprit, **nothing** may act on it: not a shared package,
+     not a shared path, not a shared module. The shared source path was the
+     tempting one, and it was the leak: the file really is the same, but the
+     report had already said the package that owns it is healthy. A report that
+     names no package at all (a pasted log) is deliberately exempt, so
+     snippet-only incidents still match on their rare symbols;
+  2. *contradiction* - `X is healthy but crashes` says something is wrong and
+     that it is not. It cannot establish what failed even when the candidate
+     names the very same package;
 
 * **the default is fail-closed** - this is the invariant that matters, because
   every earlier round of this gate leaked the same way: a phrasing the cue
@@ -288,9 +310,9 @@ database that is down, empty, foreign or stale fails within ~3 seconds with a
 command to run, never a traceback; MCP returns a structured error instead of
 hanging.
 
-**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **263
+**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **291
 passed**, measured. The suite has grown each round - 118, 146, 157, 178, 188,
-216, now 263 with the fail-closed identity tests - so a number quoted from an
+216, 263, now 291 with the authorization tests - so a number quoted from an
 earlier round no longer matches.
 `tests/test_mcp_roundtrip.py`
 drives a real MCP SDK client: lists tools, calls both, asserts CLI/MCP parity on
@@ -503,14 +525,17 @@ CLI subprocess *and* a freshly launched `repo-troubleshooter-mcp` stdio process:
 
 | phrasing | | phrasing | |
 |---|---|---|---|
-| `X is not working` | ✓ | `X: crashes` | ✓ |
-| `@dsh is healthy; X crashes` | ✓ | `X, which crashes` | ✓ |
-| `peer dependency X is not up to date` | ✓ | `X stopped working` | ✓ |
-| `X starts but crashes` | ✓ | `X won't start` | ✓ |
-| `X loads, then crashes` | ✓ | `X went sideways on us` | ✓ |
-| `X is healthy but crashes` | ✓ | | |
+| `X is not working` | ✓ | `X went sideways on us` | ✓ |
+| `@dsh is healthy; X crashes` | ✓ | `X is healthy but crashes` | ✓ |
+| `peer dependency X is not up to date` | ✓ | `healthy DSH + its own source path` | ✓ |
+| `X starts but crashes` | ✓ | `failed to install X` + healthy DSH dep | ✓ |
+| `X loads, then crashes` | ✓ | `could not import X` | ✓ |
+| `X: crashes` | ✓ | `cannot require X` | ✓ |
+| `X, which crashes` | ✓ | `@dsh is healthy but crashes` | ✓ |
+| `X stopped working` | ✓ | `nebula-theme@1.2.3 went sideways` | ✓ |
+| `X won't start` | ✓ | `@dsh is healthy but it crashes` | ✓ |
 
-All eleven return `matched=false`, `action=abstain`, `target=null` on both
+All eighteen return `matched=false`, `action=abstain`, `target=null` on both
 surfaces, the surfaces agree, and no unsafe action appears anywhere in the set.
 A twelfth, deliberately unseen wording is asserted to be refused too - by the
 invariant rather than by a phrase.
@@ -522,6 +547,40 @@ satisfied by refusing everything.
 **Remaining target.** The predicate chain is punctuation and conjunction based.
 A single clause with two subjects and no coordinator can still be misread; that
 would show up as `unresolved`, which is the safe direction.
+
+**Blockers.** None.
+
+---
+
+## 13. Three authorization paths, found by review
+
+The fail-closed roles from the previous round were necessary and not sufficient.
+Review found three routes that still reached `upgrade -> dsh-v0.1.2-alpha.2`,
+all through `source_path_plus_second_class`:
+
+| report | why it got through |
+|---|---|
+| `@deepseek-ai/dsh-client-modules is healthy and does not fail. The host process crashes separately.` + the incident's own path | the exculpation guard only covered three weak rules; the path rule was not one of them |
+| `failed to install @nebula/theme-engine` (and `could not import`, `cannot require`) | the dependency cue was checked before the failure stated in front of the mention, so the blamed package became a plain dependency |
+| `@deepseek-ai/dsh-client-modules is healthy but crashes` | correctly `unresolved`, but the candidate names the same package, so the unresolved guard did not fire |
+
+**Fixes, as authorizations rather than more vocabulary.** Two checks now run
+*above* every identity rule, so no rule can route around them: exculpation and
+contradiction. Role reading was reordered so predicates on both sides of a
+mention outrank the dependency cue, and `name@version` no longer becomes a
+dependency without an install context - which had contradicted the fail-closed
+default in the previous round.
+
+**Verification evidence.** The three reported reports now return
+`matched=false, action=abstain, target=null` through the installed CLI, and all
+eighteen phrasings pass through the CLI *and* a freshly launched
+`repo-troubleshooter-mcp` stdio process with the surfaces agreeing. The real
+boot-graph symptom still matches and still recommends `dsh-v0.1.2-alpha.2` on
+both surfaces.
+
+**Remaining target.** Contradiction is detected per mention. A report that
+contradicts itself across two sentences about the same package is not yet
+merged into one verdict.
 
 **Blockers.** None.
 

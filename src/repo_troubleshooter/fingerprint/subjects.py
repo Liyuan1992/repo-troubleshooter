@@ -44,7 +44,7 @@ from enum import StrEnum
 # Bumped whenever subject or behaviour extraction changes in a way that makes
 # already-mined signatures wrong. The value is stored alongside the mined rows;
 # a database holding an older version must be rebuilt before it may be used.
-FEATURE_EXTRACTOR_VERSION = 8
+FEATURE_EXTRACTOR_VERSION = 9
 
 # Directories every package has; a path tail led by one of these names nothing.
 GENERIC_PATH_DIRS = frozenset(
@@ -140,6 +140,10 @@ class PackageRole(StrEnum):
     DEPENDENCY = "referenced_dependency"
     #: The report says this one is fine: `X is healthy`, `X does not crash`.
     CONFIRMED_NON_PRIMARY = "confirmed_non_primary"
+    #: The report says two incompatible things about it: `X is healthy but
+    #: crashes`. Stronger than unknown - we were told something is wrong here,
+    #: so it can never authorise an action.
+    CONFLICTED = "conflicted_subject"
     #: Named, but the role could not be determined. Never treated as harmless.
     UNRESOLVED = "unresolved_subject"
 
@@ -372,6 +376,13 @@ CLAUSE_BREAK_RE = re.compile(r"[.;:!?\n]|\band\b|\bbut\b|\bwhile\b|\bhowever\b|,
 SCOPED_PACKAGE_RE = re.compile(r"@[\w.-]+/[\w.-]+(?:/[\w.-]+)*")
 BARE_PACKAGE_RE = re.compile(r"\b([a-z][\w.-]{2,})@[\^~>=<]*\d[\w.-]*")
 BUILTIN_RE = re.compile(r"\bnode:[\w/]+")
+# `name@version` only becomes a dependency when the sentence says it is one.
+INSTALL_CONTEXT_RE = re.compile(
+    r"\b(?:install(?:ed|ing|s)?|depend(?:s|ed|ency|encies)?|uses?|using|require[sd]?"
+    r"|bundled?|pinned?|upgrade[sd]?|resolved\s+to|version)\b[^.\n]{0,40}$",
+    re.IGNORECASE,
+)
+
 HYPHEN_TOKEN_RE = re.compile(r"\b([a-z][a-z0-9]*(?:-[a-z0-9]+){1,4})\b")
 
 _QUOTED = "[`\"']"
@@ -446,6 +457,11 @@ class Subjects:
     @property
     def confirmed_non_primary(self) -> set[str]:
         return self._names(PackageRole.CONFIRMED_NON_PRIMARY)
+
+    @property
+    def conflicted_packages(self) -> set[str]:
+        """The report contradicts itself about these. Never actionable."""
+        return self._names(PackageRole.CONFLICTED)
 
     @property
     def unresolved_packages(self) -> set[str]:
@@ -672,35 +688,46 @@ def classify_mention(
     roles = {role for role, _ in verdicts}
     cues = "; ".join(cue for _, cue in verdicts)
     dependency_cue = DEPENDENCY_CUE_RE.search(before)
+    dependency_text = dependency_cue.group(0).strip() if dependency_cue else ""
 
     if roles == {PackageRole.PRIMARY}:
-        prefix = f"{dependency_cue.group(0).strip()} + " if dependency_cue else ""
+        prefix = f"{dependency_text} + " if dependency_text else ""
         return build(PackageRole.PRIMARY, prefix + cues)
     if len(roles) > 1:
-        # "X is healthy but crashes" - contradictory evidence proves nothing.
-        return build(PackageRole.UNRESOLVED, "conflicting predicates: " + cues)
+        # "X is healthy but crashes" - the report contradicts itself.
+        return build(PackageRole.CONFLICTED, "conflicting predicates: " + cues)
+
+    # A failure stated *before* the mention outranks a dependency cue in the
+    # same span: `failed to install X` and `could not import X` are reports
+    # about X, not statements that X is merely used. Order matters because both
+    # patterns match the same words.
+    negated_before = NEGATED_BEFORE_RE.search(before)
+    if negated_before:
+        role = _negated_meaning(negated_before.group("verb"))
+        if role is not PackageRole.CONFIRMED_NON_PRIMARY:
+            prefix = f"{dependency_text} + " if dependency_text else ""
+            return build(role, prefix + negated_before.group(0).strip())
+
+    location_before = FAILURE_LOCATION_BEFORE_RE.search(before)
+    if location_before:
+        return build(PackageRole.PRIMARY, location_before.group(0).strip())
 
     if dependency_cue:
-        cue = dependency_cue.group(0).strip()
-        return build(PackageRole.DEPENDENCY, f"{cue} + {cues}" if cues else cue)
+        return build(
+            PackageRole.DEPENDENCY, f"{dependency_text} + {cues}" if cues else dependency_text
+        )
 
     if roles == {PackageRole.CONFIRMED_NON_PRIMARY}:
         return build(PackageRole.CONFIRMED_NON_PRIMARY, cues)
     if roles == {PackageRole.UNRESOLVED}:
         return build(PackageRole.UNRESOLVED, cues)
 
-    negated_before = NEGATED_BEFORE_RE.search(before)
     if negated_before:
-        role = _negated_meaning(negated_before.group("verb"))
-        return build(role, negated_before.group(0).strip())
+        return build(PackageRole.CONFIRMED_NON_PRIMARY, negated_before.group(0).strip())
 
     health_before = HEALTH_BEFORE_RE.search(before)
     if health_before:
         return build(PackageRole.CONFIRMED_NON_PRIMARY, health_before.group(0).strip())
-
-    location_before = FAILURE_LOCATION_BEFORE_RE.search(before)
-    if location_before:
-        return build(PackageRole.PRIMARY, location_before.group(0).strip())
 
     return build(PackageRole.UNRESOLVED, "")
 
@@ -751,14 +778,18 @@ def classify(text: str, known_modules: frozenset[str] = frozenset()) -> Subjects
             continue
         others = [s for s in spans if s != (match.start(1), match.end(1))]
         mention = classify_mention(lowered, match.start(1), match.end(1), name, others)
-        # A bare `name@version` with no failure cue reads as something installed.
-        if mention.role is PackageRole.UNRESOLVED:
+        # `name@version` on its own says nothing about the package's role. Only
+        # an explicit install/use context makes it a dependency; otherwise it
+        # stays unresolved, like any other package we cannot classify.
+        if mention.role is PackageRole.UNRESOLVED and INSTALL_CONTEXT_RE.search(
+            lowered[max(0, match.start(1) - LOOKBEHIND) : match.start(1)]
+        ):
             mention = PackageMention(
                 name=name,
                 role=PackageRole.DEPENDENCY,
                 start=mention.start,
                 end=mention.end,
-                cue="name@version",
+                cue="declared as installed",
                 context=mention.context,
             )
         subjects.package_mentions.append(mention)

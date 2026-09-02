@@ -459,7 +459,8 @@ class SymptomSignature(Base):
         Index("ix_symptom_signature_object", "object_id"),
         CheckConstraint(
             "feature_kind IN ('subject_package','subject_dependency',"
-            "'subject_confirmed_non_primary','subject_unresolved','subject_path',"
+            "'subject_confirmed_non_primary','subject_conflicted','subject_unresolved',"
+            "'subject_path',"
             "'subject_builtin','subject_module','error','structural','behavior',"
             "'component','cause')",
             name="ck_symptom_signature_kind",

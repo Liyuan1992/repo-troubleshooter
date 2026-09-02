@@ -36,6 +36,7 @@ MAX_IDENTITY_CHECKS = 6
 CANDIDATE_FEATURE_KINDS = (
     "subject_package",
     "subject_confirmed_non_primary",
+    "subject_conflicted",
     "subject_unresolved",
     "subject_path",
     "subject_module",
@@ -155,6 +156,7 @@ def _feature_channel(
     package_values = (
         set(features.subject_packages)
         | set(features.subject_confirmed_non_primary)
+        | set(features.subject_conflicted)
         | set(features.subject_unresolved)
     )
     if family is not None and package_values:
@@ -163,6 +165,7 @@ def _feature_channel(
     for kind, values in (
         ("subject_package", package_values),
         ("subject_confirmed_non_primary", package_values),
+        ("subject_conflicted", package_values),
         ("subject_unresolved", package_values),
         ("subject_path", features.subject_paths),
         ("subject_module", features.subject_modules),
@@ -265,6 +268,7 @@ def retrieve(
     query_packages = (
         set(features.subject_packages)
         | set(features.subject_confirmed_non_primary)
+        | set(features.subject_conflicted)
         | set(features.subject_unresolved)
     )
     if query_packages:
@@ -272,6 +276,7 @@ def retrieve(
             package_hits: list[str] = [
                 *candidate.feature_hits.get("subject_package", []),
                 *candidate.feature_hits.get("subject_confirmed_non_primary", []),
+                *candidate.feature_hits.get("subject_conflicted", []),
                 *candidate.feature_hits.get("subject_unresolved", []),
             ]
             if any(
