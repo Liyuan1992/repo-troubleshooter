@@ -47,14 +47,21 @@ decide, all measured:
   disk, port, TLS, permission, OOM, module-resolution or version-conflict, a
   candidate that does not exhibit that mechanism is a different incident
   (`different_root_cause`);
-* **subjects must not disagree** - subjects are typed and graded. *Strong*
-  subjects are scoped packages and source paths carrying an identifying
-  directory; *weak* subjects are module names admitted only with corpus, syntax
-  or morphology evidence (`theme-parser` yes, `customer-facing` no - a hyphen is
-  not evidence). A **strong** conflict is checked first and is decisive: two
-  reports about different packages stay different even when a weak module name
-  overlaps, and a shared function name, exception type or stack frame never
-  overrides it, because those say how something broke and not what broke;
+* **subjects disagree by role** - a subject carries a role, and each role has
+  its own authority:
+
+  | role | example | authority |
+  |---|---|---|
+  | primary package | `@deepseek-ai/dsh-client-modules` | conflict is decisive |
+  | source path | `loader/src/internal.ts` | vetoes only when packages do not already agree |
+  | referenced dependency | `react@^19` | weakens a match, never refuses one |
+  | runtime builtin | `node:path` | can neither prove nor refuse |
+  | module name | `theme-parser` | weakens a match, never refuses one |
+
+  Module names need corpus, syntax or morphology evidence (`theme-parser` yes,
+  `customer-facing` no - a hyphen is not evidence). A package conflict cannot be
+  bought off by a shared builtin, dependency, path, module name, symbol or
+  exception type: those say how something broke, not what broke;
 * **environment can only veto** - runtime/OS never contributes to identity.
 
 **Verification evidence.** Committed suite: 35 negative and regression cases,
@@ -67,11 +74,19 @@ and the same `TypeError`, three adversarial cases that pair a foreign scoped
 package or path with the incident's own vocabulary (including one where both
 sides name `client-modules`), and three wordings that previously leaked a
 candidate. All 13 require `matched=false` and forbid upgrade/downgrade/migrate/
-config_change/workaround. `tests/test_subject_strength.py` pins the same
-properties at the unit level, including **modifier invariance**: padding a
-correct report with `customer-facing`, `time-sensitive`, `release-blocking` and
-similar adjectives must not change the verdict, the rule, or the shared strong
-subjects - and must not rescue an unrelated report either.
+config_change/workaround.
+
+`tests/test_subject_strength.py` pins the properties at the unit level:
+
+* **role precedence** - a foreign package stays foreign when the query also
+  carries the candidate's `node:path`, its `node:module`, its source path, its
+  module name, its `__DSH_BOOT__` symbol and its `TypeError`, all at once;
+* **weak roles cannot veto** - a module-name mismatch is refused as
+  `insufficient_identity_evidence`, never as a subject veto;
+* **transformation invariance** - padding a correct report with business
+  adjectives, business nouns, quoted runbook text and tracker tags
+  (`[SEV-2] ... TICKET-4821`) must not change the verdict, the rule, or the
+  shared packages, and must not rescue an unrelated report either.
 
 These regression wordings were written by the same developer who wrote the code,
 so they prove the defects are closed - **not** that the system generalises. No
@@ -124,7 +139,8 @@ for false matches.
 
 History of this denominator, so the number is not read as growth in quality:
 **54/55** before the regression cases, **64/65** after the first 10, **68/69**
-now that three adversarial cases and one modifier-invariance case were added.
+since three adversarial cases and one modifier-invariance case were added. The
+subject-role rework changed no case outcome: still 68/69, same gap.
 
 **Correct Action@1 exclusion rule:** the documented gap is excluded from the
 denominator (n=29, not 30). It is not counted as a pass and not counted as a
@@ -133,7 +149,7 @@ excluded.
 
 | Metric | Value | n |
 |---|---|---|
-| Correct Action@1 | 1.00 | 30 (gap excluded) |
+| Correct Action@1 | 1.00 | **30** (gap excluded) |
 | negative false-incident rate | 0.00 | 38 |
 | unsafe action rate (negatives + regressions) | 0.00 | 38 |
 | unsafe action rate (environment contradictions) | 0.00 | 2 |
@@ -176,9 +192,10 @@ database that is down, empty, foreign or stale fails within ~3 seconds with a
 command to run, never a traceback; MCP returns a structured error instead of
 hanging.
 
-**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **146
-passed** (118 before this round; the 125 quoted in review predates the
-subject-strength and signature-freshness tests added here).
+**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **157
+passed**, measured. The suite has grown each round - 118, then 146 with the
+subject-strength and signature-freshness tests, now 157 with the subject-role
+tests - so a number quoted from an earlier round no longer matches.
 `tests/test_mcp_roundtrip.py`
 drives a real MCP SDK client: lists tools, calls both, asserts CLI/MCP parity on
 status, action, target, `incident.matched`, `stages.stopped_at` and the
@@ -197,15 +214,16 @@ payloads beyond the current coverage note.
 
 ## 6. Data
 
-**Current fact.** 550 discussions, 1510 comments, 123 doc files, 7 releases, 19,185
-symptom signatures. Discussion coverage is still partial and reports `degraded`.
+**Current fact.** 550 discussions, 1510 comments, 123 doc files, 7 releases,
+**15,723 stored symptom signatures** (measured after the subject-role rebuild;
+earlier rounds reported inflated figures - see the row-accounting note below). Discussion coverage is still partial and reports `degraded`.
 A paced backfill (`rt sync … --backfill-pages N`) walks older history a few pages
 at a time, persists its GraphQL cursor, resumes where it stopped, and never claims
 `complete` while pages remain.
 
 **Verification evidence.** Backfill measured across three runs: discussions
-402 → 550, comments 1219 → 1510, signatures 15,732 → 18,555 (19,185 after the
-subject class was added); `discussions_backfill`
+402 → 550, comments 1219 → 1510. Signature counts from those runs are **not**
+comparable: they summed both mining passes. `discussions_backfill`
 stayed `degraded` with `exhausted: false` throughout. `rt status` shows per-source
 health and `data_as_of`.
 
@@ -266,6 +284,33 @@ error) - then restores it.
 
 **Remaining target.** The rebuild is manual. A sync that notices a version
 mismatch could rebuild automatically.
+
+**Blockers.** None.
+
+---
+
+## 9. Counting what is actually stored
+
+**Current fact.** Mining runs twice - once on what each thread proves alone, once
+more after the corpus can vouch for module names - and most rows offered in the
+second pass already exist. Adding both passes together reported roughly twice
+what the database holds, so the counts are now separate:
+
+| count | meaning | last rebuild |
+|---|---|---|
+| `rows_attempted` | (kind, value) pairs offered to the database | 31,368 |
+| `rows_inserted` | of those, actually new | 15,723 |
+| `rows_stored_total` | rows the repository holds afterwards | **15,723** |
+
+Earlier rounds reported the attempted figure (32,882, and 19,185 before that) as
+if it were storage. It was not.
+
+**Verification evidence.** `rt signatures <repo> --rebuild` prints all three, and
+`rows_inserted` comes from `RETURNING` on the insert rather than from the length
+of the batch, so conflicts are excluded rather than assumed.
+
+**Remaining target.** The second pass re-offers every row; it could re-offer only
+the objects whose module names the corpus newly vouches for.
 
 **Blockers.** None.
 

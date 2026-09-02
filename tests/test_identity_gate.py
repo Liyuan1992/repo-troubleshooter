@@ -113,7 +113,7 @@ class TestSubjectDisagreement:
         assert verdict.rejection != "different_subject"
 
     def test_a_paraphrase_with_no_subjects_is_unaffected(self):
-        """The rule needs subjects on BOTH sides, so plain prose still gets through."""
+        """The veto needs a named subject on BOTH sides; plain prose has none."""
         query = features(
             "The Harness web page starts on Windows but the client boot graph has no entries or "
             "batches, and the browser never preloads the dsh client JavaScript module."
@@ -143,8 +143,8 @@ class TestParaphraseIsIdentity:
         # With subjects typed, an exact paste matches on the package it names -
         # a stronger reason than the symbol overlap it used to rely on.
         assert verdict.rule in (
-            "strong_subject_plus_second_class",
-            "subject_plus_second_class",
+            "primary_package_plus_second_class",
+            "source_path_plus_second_class",
             "error_type_plus_second_class",
             "two_independent_symbols",
         )

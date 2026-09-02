@@ -1,36 +1,41 @@
-"""What a report is *about*, with a type and a strength.
+"""What a report is *about*, classified by role.
 
-`customer-facing` and `time-sensitive` are adjectives. `theme-parser` is a
-module. A regex over hyphens cannot tell them apart, so this module asks for
-evidence instead:
+A flat "strong subject" set was wrong: it let a shared `node:path` or a shared
+source path cancel a conflict between two different scoped packages. Subjects
+therefore carry a role, and each role has its own authority:
 
-**strong** - a scoped package (`@deepseek-ai/dsh-client-modules`, `node:path`) or
-a source path carrying an identifying directory (`loader/src/internal.ts`).
-These name a place in the tree, and a conflict between two of them is decisive.
+``package`` - a scoped package (`@deepseek-ai/dsh-client-modules`). The primary
+    subject. Two reports about different packages are about different things,
+    and nothing else may override that.
 
-**weak** - a module name, admitted only when something proves it is one:
+``path`` - a source path carrying an identifying directory
+    (`loader/src/internal.ts`). Names a place in the tree; can veto, but only
+    when the packages do not already agree.
 
-* *syntax* - the text uses it as code does: in backticks or quotes, with a path
-  or extension, with an `@version`, as a log prefix (`client-modules: ...`), or
-  after `package`/`module`/`plugin`/`import`/`from`;
-* *morphology* - the last segment names a thing rather than describing one: an
-  agent noun (`-parser`, `-loader`, `-renderer`) or a known component noun
-  (`-modules`, `-shim`, `-plugin`). Adjectival endings (`-facing`, `-sensitive`,
-  `-widening`) are rejected;
-* *corpus* - the repository's own mined subjects already contain the name.
+``dependency`` - a package named as something the report *uses* (`react@^19`,
+    "peer dependency x"). Referenced, not the subject: a mismatch weakens a
+    match, it does not refuse one.
 
-Anything else is left to the plain text and structural features, where it can
-contribute to retrieval but can never veto an identity decision.
+``builtin`` - `node:path`, `node:fs`. Every Node program touches these, so they
+    can never establish identity and never veto it.
+
+``module`` - a bare module name (`theme-parser`), admitted only with corpus,
+    syntax or morphology evidence. Helps retrieval and scoring; a mismatch
+    raises the bar for acceptance but never refuses on its own.
+
+`customer-facing` and `time-sensitive` are none of these. A hyphen is not
+evidence.
 """
 
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 
 # Bumped whenever subject or behaviour extraction changes in a way that makes
 # already-mined signatures wrong. The value is stored alongside the mined rows;
 # a database holding an older version must be rebuilt before it may be used.
-FEATURE_EXTRACTOR_VERSION = 3
+FEATURE_EXTRACTOR_VERSION = 4
 
 # Directories every package has; a path tail led by one of these names nothing.
 GENERIC_PATH_DIRS = frozenset(
@@ -110,6 +115,15 @@ ADJECTIVAL_SUFFIXES = (
     "wide",
 )
 
+SCOPED_PACKAGE_RE = re.compile(r"@[\w.-]+/[\w.-]+(?:/[\w.-]+)*")
+BUILTIN_RE = re.compile(r"\bnode:[\w/]+")
+# `react@^19`, `left-pad@1.2.3`, and names introduced as dependencies.
+DEPENDENCY_VERSIONED_RE = re.compile(r"\b([a-z][\w.-]{2,})@[\^~>=<]*\d[\w.-]*")
+DEPENDENCY_CONTEXT_RE = re.compile(
+    r"\b(?:peer\s+)?dependenc(?:y|ies)\s+(?:on\s+)?[\"'`]?([@\w./-]{3,})",
+    re.IGNORECASE,
+)
+
 _QUOTED = "[`\"']"
 _SYNTAX_PROOF_TEMPLATES = (
     # `theme-parser`, "theme-parser", 'theme-parser'
@@ -123,6 +137,59 @@ _SYNTAX_PROOF_TEMPLATES = (
     # the package theme-parser / import x from theme-parser
     r"\b(?:package|module|plugin|vendor|import|require|from|dependency)\s+" + _QUOTED + r"?{token}",
 )
+
+HYPHEN_TOKEN_RE = re.compile(r"\b([a-z][a-z0-9]*(?:-[a-z0-9]+){1,4})\b")
+
+_TOKEN_SPLIT_RE = re.compile(r"[\s,;:()\[\]{}<>\"'`]+")
+SOURCE_SUFFIXES = (
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+    ".py",
+    ".rs",
+    ".go",
+    ".java",
+)
+
+
+@dataclass
+class Subjects:
+    """The named things a report is about, by role."""
+
+    packages: set[str] = field(default_factory=set)
+    paths: set[str] = field(default_factory=set)
+    dependencies: set[str] = field(default_factory=set)
+    builtins: set[str] = field(default_factory=set)
+    modules: set[str] = field(default_factory=set)
+
+    @property
+    def all(self) -> set[str]:
+        return self.packages | self.paths | self.dependencies | self.builtins | self.modules
+
+    @property
+    def identifying(self) -> set[str]:
+        """Roles that may establish identity. Builtins are excluded on purpose."""
+        return self.packages | self.paths | self.modules
+
+    def is_empty(self) -> bool:
+        return not self.all
+
+
+def iter_source_paths(text: str) -> list[str]:
+    """Tokens that look like a source path with at least one directory.
+
+    Split rather than matched with nested quantifiers: a regex of the shape
+    `[\\w.@-]+(?:[/\\\\][\\w.@-]+)+\\.ext` backtracks catastrophically on logs.
+    """
+    found: list[str] = []
+    for token in _TOKEN_SPLIT_RE.split(text):
+        cleaned = token.strip("'\"`.,;")
+        if ("/" in cleaned or chr(92) in cleaned) and cleaned.lower().endswith(SOURCE_SUFFIXES):
+            found.append(cleaned)
+    return found
 
 
 def _is_adjectival(segment: str) -> bool:
@@ -171,12 +238,64 @@ def identifying_path_tail(path: str) -> str | None:
     return None
 
 
-def module_names_from_subjects(subjects: set[str]) -> set[str]:
-    """Corpus evidence: module names implied by strong subjects already mined."""
+def classify(text: str, known_modules: frozenset[str] = frozenset()) -> Subjects:
+    """Split every named subject in ``text`` into its role."""
+    subjects = Subjects()
+    lowered = text.lower()
+
+    # --- runtime builtins first, so they never masquerade as packages -------
+    for match in BUILTIN_RE.finditer(lowered):
+        subjects.builtins.add(match.group(0))
+
+    # --- primary scoped packages -------------------------------------------
+    for match in SCOPED_PACKAGE_RE.finditer(lowered):
+        value = match.group(0)
+        subjects.packages.add(value)
+        if value.count("/") >= 1:
+            scope, _, rest = value.partition("/")
+            subjects.packages.add(f"{scope}/{rest.split('/')[0]}")
+
+    # --- referenced dependencies -------------------------------------------
+    for match in DEPENDENCY_VERSIONED_RE.finditer(lowered):
+        name = match.group(1)
+        if name not in subjects.packages and not name.startswith("node:"):
+            subjects.dependencies.add(name)
+    for match in DEPENDENCY_CONTEXT_RE.finditer(text):
+        name = match.group(1).lower().strip("\"'`")
+        if name.startswith("@"):
+            continue  # a scoped dependency is still a package; keep it primary
+        if len(name) >= 3:
+            subjects.dependencies.add(name)
+
+    # --- source paths -------------------------------------------------------
+    for path in iter_source_paths(lowered):
+        tail = identifying_path_tail(path)
+        if tail:
+            subjects.paths.add(tail)
+
+    # --- weak module names --------------------------------------------------
+    named_elsewhere = subjects.packages | subjects.paths | subjects.builtins
+    for match in HYPHEN_TOKEN_RE.finditer(lowered):
+        token = match.group(1)
+        if len(token) < 6 or any(token in value for value in named_elsewhere):
+            continue
+        if (
+            token in known_modules
+            or syntax_proves_module(token, text)
+            or morphology_proves_module(token)
+        ):
+            subjects.modules.add(token)
+    subjects.modules -= subjects.dependencies
+
+    return subjects
+
+
+def module_names_from_subjects(values: set[str]) -> set[str]:
+    """Corpus evidence: module names implied by package and path subjects."""
     names: set[str] = set()
-    for subject in subjects:
-        if subject.startswith("@") and "/" in subject:
-            names.add(subject.split("/", 1)[1].split("/")[0])
-        elif "/" in subject:
-            names.add(subject.split("/")[0])
+    for value in values:
+        if value.startswith("@") and "/" in value:
+            names.add(value.split("/", 1)[1].split("/")[0])
+        elif "/" in value:
+            names.add(value.split("/")[0])
     return {name for name in names if "-" in name and len(name) >= 6}

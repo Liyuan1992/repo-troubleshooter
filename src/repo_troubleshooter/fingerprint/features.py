@@ -44,15 +44,9 @@ from repo_troubleshooter.fingerprint.error import (
     DUNDER_RE,
     ERROR_CODE_RE,
     EXCEPTION_RE,
-    HYPHEN_MODULE_RE,
-    PACKAGE_RE,
     normalize,
 )
-from repo_troubleshooter.fingerprint.subjects import (
-    identifying_path_tail,
-    morphology_proves_module,
-    syntax_proves_module,
-)
+from repo_troubleshooter.fingerprint.subjects import classify
 
 # --- cause taxonomy ---------------------------------------------------------
 #
@@ -294,44 +288,6 @@ _BEHAVIOUR_STOP = frozenset(
 )
 
 
-# Light stemming: enough to make entries/entry and preloads/preload agree.
-def _stem(word: str) -> str:
-    lowered = word.lower().strip("`'\".,;:()[]{}")
-    if len(lowered) > 4 and lowered.endswith("ies"):
-        return lowered[:-3] + "y"
-    for suffix in ("ing", "ed", "es", "s"):
-        if len(lowered) > len(suffix) + 3 and lowered.endswith(suffix):
-            return lowered[: -len(suffix)]
-    return lowered
-
-
-# Path-ish tokens are found by splitting, not by a nested-quantifier regex:
-# `[\w.@-]+(?:[/\][\w.@-]+)+\.ext` backtracks catastrophically on long logs.
-_TOKEN_SPLIT_RE = re.compile(r"[\s,;:()\[\]{}<>\"'`]+")
-SOURCE_SUFFIXES = (
-    ".ts",
-    ".tsx",
-    ".js",
-    ".jsx",
-    ".mjs",
-    ".cjs",
-    ".py",
-    ".rs",
-    ".go",
-    ".java",
-)
-
-
-def iter_source_paths(text: str) -> list[str]:
-    """Tokens that look like a source path with at least one directory."""
-    found: list[str] = []
-    for token in _TOKEN_SPLIT_RE.split(text):
-        cleaned = token.strip("'\"`.,;")
-        if ("/" in cleaned or chr(92) in cleaned) and cleaned.lower().endswith(SOURCE_SUFFIXES):
-            found.append(cleaned)
-    return found
-
-
 COMPONENT_HINTS = (
     "loader",
     "client",
@@ -364,12 +320,16 @@ COMPONENT_HINTS = (
 class SymptomFeatures:
     """One symptom, decomposed. Every set is lowercase and normalised."""
 
+    # Subjects, by role. A package conflict is decisive; a path conflict vetoes
+    # only when the packages do not already agree; dependencies and modules
+    # weaken a match without refusing it; builtins do neither, because every
+    # Node program touches `node:path`.
+    subject_packages: set[str] = field(default_factory=set)
+    subject_paths: set[str] = field(default_factory=set)
+    subject_dependencies: set[str] = field(default_factory=set)
+    subject_builtins: set[str] = field(default_factory=set)
+    subject_modules: set[str] = field(default_factory=set)
     error: set[str] = field(default_factory=set)
-    # Strong: packages and source paths. A conflict between two of these is
-    # decisive and cannot be offset by a weak subject that happens to overlap.
-    subject_strong: set[str] = field(default_factory=set)
-    # Weak: module names, admitted only with corpus/syntax/morphology proof.
-    subject_weak: set[str] = field(default_factory=set)
     structural: set[str] = field(default_factory=set)
     behavior: set[str] = field(default_factory=set)
     component: set[str] = field(default_factory=set)
@@ -377,13 +337,24 @@ class SymptomFeatures:
 
     @property
     def subject(self) -> set[str]:
-        """Every named subject, whatever its strength."""
-        return self.subject_strong | self.subject_weak
+        """Every named subject, whatever its role."""
+        return (
+            self.subject_packages
+            | self.subject_paths
+            | self.subject_dependencies
+            | self.subject_builtins
+            | self.subject_modules
+        )
+
+    @property
+    def identifying_subjects(self) -> set[str]:
+        """Roles that may establish identity - builtins excluded on purpose."""
+        return self.subject_packages | self.subject_paths | self.subject_modules
 
     @property
     def strong(self) -> set[str]:
         """Feature values that can carry identity on their own."""
-        return self.error | self.structural | self.subject
+        return self.error | self.structural | self.identifying_subjects
 
     def is_empty(self) -> bool:
         return not (
@@ -392,9 +363,12 @@ class SymptomFeatures:
 
     def to_json(self) -> dict[str, Any]:
         return {
+            "subject_packages": sorted(self.subject_packages),
+            "subject_paths": sorted(self.subject_paths),
+            "subject_dependencies": sorted(self.subject_dependencies),
+            "subject_builtins": sorted(self.subject_builtins),
+            "subject_modules": sorted(self.subject_modules),
             "error": sorted(self.error),
-            "subject_strong": sorted(self.subject_strong),
-            "subject_weak": sorted(self.subject_weak),
             "structural": sorted(self.structural),
             "behavior": sorted(self.behavior),
             "component": sorted(self.component),
@@ -405,9 +379,12 @@ class SymptomFeatures:
         """(feature_kind, feature_value) pairs, for storage."""
         rows: list[tuple[str, str]] = []
         for kind, values in (
+            ("subject_package", self.subject_packages),
+            ("subject_path", self.subject_paths),
+            ("subject_dependency", self.subject_dependencies),
+            ("subject_builtin", self.subject_builtins),
+            ("subject_module", self.subject_modules),
             ("error", self.error),
-            ("subject_strong", self.subject_strong),
-            ("subject_weak", self.subject_weak),
             ("structural", self.structural),
             ("behavior", self.behavior),
             ("component", self.component),
@@ -415,6 +392,17 @@ class SymptomFeatures:
         ):
             rows.extend((kind, value) for value in sorted(values))
         return rows
+
+
+# Light stemming: enough to make entries/entry and preloads/preload agree.
+def _stem(word: str) -> str:
+    lowered = word.lower().strip("`'\".,;:()[]{}")
+    if len(lowered) > 4 and lowered.endswith("ies"):
+        return lowered[:-3] + "y"
+    for suffix in ("ing", "ed", "es", "s"):
+        if len(lowered) > len(suffix) + 3 and lowered.endswith(suffix):
+            return lowered[: -len(suffix)]
+    return lowered
 
 
 def detect_causes(text: str) -> set[str]:
@@ -447,47 +435,6 @@ def component_features(text: str) -> set[str]:
     return {hint for hint in COMPONENT_HINTS if re.search(rf"\b{hint}s?\b", lowered)}
 
 
-# Directories every package has; a path tail led by one of these names nothing.
-def strong_subjects(text: str) -> set[str]:
-    """Packages and source paths: things that exist at a location in the tree."""
-    subjects: set[str] = set()
-
-    for match in PACKAGE_RE.finditer(text):
-        value = (match.group(1) or match.group(0)).lower()
-        subjects.add(value)
-        if value.startswith("@") and value.count("/") >= 1:
-            scope, _, rest = value.partition("/")
-            subjects.add(f"{scope}/{rest.split('/')[0]}")
-
-    for path in iter_source_paths(text.lower()):
-        tail = identifying_path_tail(path)
-        if tail:
-            subjects.add(tail)
-
-    return subjects
-
-
-def weak_subjects(text: str, known_modules: frozenset[str] = frozenset()) -> set[str]:
-    """Module names, admitted only with corpus, syntax or morphology evidence.
-
-    A bare hyphenated phrase is not a subject. `customer-facing` and
-    `time-sensitive` reach none of these three proofs and stay out.
-    """
-    subjects: set[str] = set()
-    lowered = text.lower()
-    for match in HYPHEN_MODULE_RE.finditer(lowered):
-        token = match.group(1)
-        if len(token) < 6 or token in COMPONENT_HINTS:
-            continue
-        if (
-            token in known_modules
-            or syntax_proves_module(token, text)
-            or morphology_proves_module(token)
-        ):
-            subjects.add(token)
-    return subjects
-
-
 def extract(text: str | None, *, known_modules: frozenset[str] = frozenset()) -> SymptomFeatures:
     """Decompose one piece of symptom text into its feature classes."""
     if not text or not text.strip():
@@ -498,8 +445,7 @@ def extract(text: str | None, *, known_modules: frozenset[str] = frozenset()) ->
     error = {m.lower() for m in EXCEPTION_RE.findall(signature)}
     error |= {m.lower() for m in ERROR_CODE_RE.findall(signature)}
 
-    subject_strong = strong_subjects(signature)
-    subject_weak = weak_subjects(signature, known_modules) - subject_strong
+    subjects = classify(signature, known_modules)
 
     structural: set[str] = set()
     structural |= {m.lower() for m in DUNDER_RE.findall(signature)}
@@ -507,12 +453,15 @@ def extract(text: str | None, *, known_modules: frozenset[str] = frozenset()) ->
     structural |= {m.lower() for m in CAMEL_RE.findall(signature) if len(m) >= 6}
     structural -= error
     # A symbol is not a subject: `e.indexOf` belongs to whoever called it.
-    structural -= subject_strong | subject_weak
+    structural -= subjects.all
 
     return SymptomFeatures(
         error=error,
-        subject_strong=subject_strong,
-        subject_weak=subject_weak,
+        subject_packages=subjects.packages,
+        subject_paths=subjects.paths,
+        subject_dependencies=subjects.dependencies,
+        subject_builtins=subjects.builtins,
+        subject_modules=subjects.modules,
         structural=structural,
         behavior=behavioral_features(signature),
         component=component_features(signature),
@@ -524,8 +473,11 @@ def merge(*feature_sets: SymptomFeatures) -> SymptomFeatures:
     merged = SymptomFeatures()
     for features in feature_sets:
         merged.error |= features.error
-        merged.subject_strong |= features.subject_strong
-        merged.subject_weak |= features.subject_weak
+        merged.subject_packages |= features.subject_packages
+        merged.subject_paths |= features.subject_paths
+        merged.subject_dependencies |= features.subject_dependencies
+        merged.subject_builtins |= features.subject_builtins
+        merged.subject_modules |= features.subject_modules
         merged.structural |= features.structural
         merged.behavior |= features.behavior
         merged.component |= features.component

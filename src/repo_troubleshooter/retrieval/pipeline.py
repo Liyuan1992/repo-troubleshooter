@@ -33,8 +33,9 @@ MAX_CANDIDATES = 8
 MAX_IDENTITY_CHECKS = 6
 # Feature classes that may pull a candidate into stage 1 on their own.
 CANDIDATE_FEATURE_KINDS = (
-    "subject_strong",
-    "subject_weak",
+    "subject_package",
+    "subject_path",
+    "subject_module",
     "error",
     "structural",
     "behavior",
@@ -137,8 +138,9 @@ def _feature_channel(
 ) -> dict[int, dict[str, list[str]]]:
     pairs: list[tuple[str, str]] = []
     for kind, values in (
-        ("subject_strong", features.subject_strong),
-        ("subject_weak", features.subject_weak),
+        ("subject_package", features.subject_packages),
+        ("subject_path", features.subject_paths),
+        ("subject_module", features.subject_modules),
         ("error", features.error),
         ("structural", features.structural),
         ("behavior", features.behavior),
@@ -208,7 +210,7 @@ def retrieve(
         strong_hits = sum(
             len(v)
             for k, v in hits.items()
-            if k in ("subject_strong", "subject_weak", "error", "structural")
+            if k in ("subject_package", "subject_path", "error", "structural")
         )
         total_hits = sum(len(v) for v in hits.values())
         if object_id in merged:
@@ -256,7 +258,7 @@ def identify(
 ) -> RetrievalOutcome:
     """Stage 2: decide which candidate, if any, is the *same incident*."""
     query_values = (
-        query_features.subject
+        query_features.identifying_subjects
         | query_features.error
         | query_features.structural
         | query_features.behavior

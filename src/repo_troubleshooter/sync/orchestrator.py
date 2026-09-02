@@ -805,13 +805,16 @@ def build_signatures(
     try:
         stats = build_for_repository(session, repo, progress=progress)
         report.objects = stats.objects
-        report.changed = stats.rows_written
+        report.changed = stats.rows_inserted
         report.detail = stats.to_json()
         report.status = "complete"
         upsert.mark_sync_success(
             session, repo.id, "signatures", objects_seen=stats.objects, stats=stats.to_json()
         )
-        progress(f"signatures: {stats.objects} objects, {stats.rows_written} features")
+        progress(
+            f"signatures: {stats.objects} objects, {stats.rows_inserted} new rows, "
+            f"{stats.rows_stored_total} stored"
+        )
     except Exception as exc:  # noqa: BLE001
         report.status = "failed"
         report.error = str(exc)

@@ -40,16 +40,34 @@ MAX_TEXT_CHARS = 20000
 
 @dataclass
 class SignatureStats:
+    """Three different numbers that were previously conflated into one.
+
+    Mining runs twice - once on what each thread proves alone, once more after
+    the corpus can vouch for module names - and most rows in the second pass
+    already exist. Adding both passes together reported roughly twice the rows
+    the database actually holds, so the counts are kept apart:
+
+    ``rows_attempted`` how many (kind, value) pairs were offered;
+    ``rows_inserted`` how many of those were new (conflicts excluded);
+    ``rows_stored_total`` how many rows the repository actually has afterwards.
+    """
+
     objects: int = 0
-    rows_written: int = 0
+    rows_attempted: int = 0
+    rows_inserted: int = 0
+    rows_stored_total: int = 0
     skipped_empty: int = 0
+    passes: int = 1
     extractor_version: int = FEATURE_EXTRACTOR_VERSION
 
     def to_json(self) -> dict[str, Any]:
         return {
             "objects": self.objects,
-            "rows_written": self.rows_written,
+            "rows_attempted": self.rows_attempted,
+            "rows_inserted": self.rows_inserted,
+            "rows_stored_total": self.rows_stored_total,
             "skipped_empty": self.skipped_empty,
+            "passes": self.passes,
             "extractor_version": self.extractor_version,
         }
 
@@ -81,7 +99,7 @@ def known_modules(session: Session, repo_id: int) -> frozenset[str]:
     rows = session.scalars(
         select(SymptomSignature.feature_value).where(
             SymptomSignature.repo_id == repo_id,
-            SymptomSignature.feature_kind == "subject_strong",
+            SymptomSignature.feature_kind.in_(("subject_package", "subject_path")),
         )
     ).all()
     return frozenset(module_names_from_subjects(set(rows)))
@@ -89,10 +107,11 @@ def known_modules(session: Session, repo_id: int) -> frozenset[str]:
 
 def store_features(
     session: Session, *, repo_id: int, object_id: int, features: SymptomFeatures
-) -> int:
+) -> tuple[int, int]:
+    """Insert the object's features. Returns (attempted, actually inserted)."""
     rows = features.as_rows()
     if not rows:
-        return 0
+        return 0, 0
     stmt = (
         pg_insert(SymptomSignature)
         .values(
@@ -108,9 +127,10 @@ def store_features(
             ]
         )
         .on_conflict_do_nothing(constraint="uq_symptom_signature")
+        .returning(SymptomSignature.id)
     )
-    session.execute(stmt)
-    return len(rows)
+    inserted = len(session.execute(stmt).scalars().all())
+    return len(rows), inserted
 
 
 def build_for_repository(
@@ -141,9 +161,11 @@ def build_for_repository(
         if features.is_empty():
             stats.skipped_empty += 1
             continue
-        stats.rows_written += store_features(
+        attempted, inserted = store_features(
             session, repo_id=repo.id, object_id=obj.id, features=features
         )
+        stats.rows_attempted += attempted
+        stats.rows_inserted += inserted
         stats.objects += 1
         if progress and stats.objects % 100 == 0:
             progress(f"signatures: {stats.objects} objects mined")
@@ -160,22 +182,35 @@ def build_for_repository(
             features = features_for_object(session, obj, corpus)
             if features.is_empty():
                 continue
-            stats.rows_written += store_features(
+            attempted, inserted = store_features(
                 session, repo_id=repo.id, object_id=obj.id, features=features
             )
+            stats.rows_attempted += attempted
+            stats.rows_inserted += inserted
             rescanned += 1
             if rescanned % 200 == 0:
                 session.commit()
         session.commit()
+        stats.passes = 2
         if progress:
             progress(f"signatures: corpus pass over {rescanned} objects")
 
-    _record_extractor_version(session, repo)
+    stats.rows_stored_total = (
+        session.scalar(
+            select(func.count())
+            .select_from(SymptomSignature)
+            .where(SymptomSignature.repo_id == repo.id)
+        )
+        or 0
+    )
+    _record_extractor_version(session, repo, stats)
     session.commit()
     return stats
 
 
-def _record_extractor_version(session: Session, repo: Repository) -> None:
+def _record_extractor_version(
+    session: Session, repo: Repository, stats: SignatureStats | None = None
+) -> None:
     """Stamp the mined rows with the extractor that produced them."""
     state = session.scalar(
         select(SyncState).where(SyncState.repo_id == repo.id, SyncState.source == "signatures")
@@ -184,9 +219,11 @@ def _record_extractor_version(session: Session, repo: Repository) -> None:
         state = SyncState(repo_id=repo.id, source="signatures", status="complete", stats={})
         session.add(state)
         session.flush()
-    stats = dict(state.stats or {})
-    stats["extractor_version"] = FEATURE_EXTRACTOR_VERSION
-    state.stats = stats
+    recorded = dict(state.stats or {})
+    recorded["extractor_version"] = FEATURE_EXTRACTOR_VERSION
+    if stats is not None:
+        recorded.update(stats.to_json())
+    state.stats = recorded
     session.flush()
 
 
@@ -199,10 +236,16 @@ def load_features(session: Session, object_id: int) -> SymptomFeatures:
         )
     ).all()
     for kind, value in rows:
-        if kind == "subject_strong":
-            features.subject_strong.add(value)
-        elif kind == "subject_weak":
-            features.subject_weak.add(value)
+        if kind == "subject_package":
+            features.subject_packages.add(value)
+        elif kind == "subject_path":
+            features.subject_paths.add(value)
+        elif kind == "subject_dependency":
+            features.subject_dependencies.add(value)
+        elif kind == "subject_builtin":
+            features.subject_builtins.add(value)
+        elif kind == "subject_module":
+            features.subject_modules.add(value)
         elif kind == "error":
             features.error.add(value)
         elif kind == "structural":
