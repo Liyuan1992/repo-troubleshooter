@@ -458,9 +458,38 @@ class SymptomSignature(Base):
         Index("ix_symptom_signature_lookup", "repo_id", "feature_kind", "feature_value"),
         Index("ix_symptom_signature_object", "object_id"),
         CheckConstraint(
-            "feature_kind IN ('subject_package','subject_path','subject_dependency',"
-            "'subject_builtin','subject_module','error','structural',"
-            "'behavior','component','cause')",
+            "feature_kind IN ('subject_package','subject_dependency','subject_mentioned',"
+            "'subject_path','subject_builtin','subject_module','error',"
+            "'structural','behavior','component','cause')",
             name="ck_symptom_signature_kind",
         ),
+    )
+
+
+class PackageManifest(Base):
+    """A `package.json` found in the repository tree.
+
+    The source of truth for which packages this product publishes, and how they
+    relate. Read from the mirror at sync time so no package name is ever
+    hardcoded in this codebase.
+    """
+
+    __tablename__ = "package_manifest"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    repo_id: Mapped[int] = mapped_column(
+        ForeignKey("repository.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(300), nullable=False)
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    version: Mapped[str | None] = mapped_column(String(120))
+    is_private: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # The manifest at the repository root: the product every other one belongs to.
+    is_workspace_root: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    extra: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    observed_at = _utcnow_col()
+
+    __table_args__ = (
+        UniqueConstraint("repo_id", "path", name="uq_package_manifest_path"),
+        Index("ix_package_manifest_name", "repo_id", "name"),
     )

@@ -28,12 +28,14 @@ from repo_troubleshooter.fingerprint.features import SymptomFeatures
 from repo_troubleshooter.relations import signatures
 from repo_troubleshooter.retrieval import candidates as token_channel
 from repo_troubleshooter.retrieval.identity import IdentityVerdict, evaluate
+from repo_troubleshooter.versions.packages import PackageFamily
 
 MAX_CANDIDATES = 8
 MAX_IDENTITY_CHECKS = 6
 # Feature classes that may pull a candidate into stage 1 on their own.
 CANDIDATE_FEATURE_KINDS = (
     "subject_package",
+    "subject_mentioned",
     "subject_path",
     "subject_module",
     "error",
@@ -139,6 +141,7 @@ def _feature_channel(
     pairs: list[tuple[str, str]] = []
     for kind, values in (
         ("subject_package", features.subject_packages),
+        ("subject_mentioned", features.subject_mentioned),
         ("subject_path", features.subject_paths),
         ("subject_module", features.subject_modules),
         ("error", features.error),
@@ -265,6 +268,8 @@ def identify(
         | query_features.component
     )
     doc_freq = signatures.document_frequencies(session, repo_id, query_values)
+    # Which packages ship inside which, learned from the repository's manifests.
+    family = PackageFamily.load(session, repo_id)
 
     for candidate in outcome.candidates[:max_checks]:
         candidate_features = signatures.load_features(session, candidate.object_id)
@@ -273,6 +278,7 @@ def identify(
             candidate_features,
             doc_freq=doc_freq,
             corpus_objects=outcome.corpus_objects,
+            package_family=family,
         )
 
     accepted = [c for c in outcome.candidates if c.identity is not None and c.identity.accepted]

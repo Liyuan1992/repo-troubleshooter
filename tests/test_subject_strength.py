@@ -66,7 +66,7 @@ class TestSubjectRoles:
             "@deepseek-ai/dsh-client-modules fails in packages/loader/src/internal.ts "
             "while importing node:path; peer dependency react@^19 is installed"
         )
-        assert "@deepseek-ai/dsh-client-modules" in subjects.packages
+        assert "@deepseek-ai/dsh-client-modules" in subjects.primary_packages
         assert "loader/src/internal.ts" in subjects.paths
         assert "node:path" in subjects.builtins
         assert "react" in subjects.dependencies

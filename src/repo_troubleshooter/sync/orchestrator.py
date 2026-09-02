@@ -34,6 +34,7 @@ from repo_troubleshooter.store.db import session_scope
 from repo_troubleshooter.store.models import Release, Repository, SourceObject
 from repo_troubleshooter.sync import upsert
 from repo_troubleshooter.versions import semver
+from repo_troubleshooter.versions.packages import discover_manifests, store_manifests
 
 ProgressFn = Callable[[str], None]
 
@@ -795,6 +796,41 @@ def backfill_discussions(
     return report
 
 
+def sync_package_manifests(
+    session: Session, repo: Repository, git: GitRepo, *, progress: ProgressFn = _noop
+) -> SourceReport:
+    """Read every package.json in the tree.
+
+    This is where the product's package family comes from: which names this
+    repository publishes, and which of them ship inside which. Nothing about it
+    is repository-specific - it is whatever the manifests say.
+    """
+    report = SourceReport(source="packages")
+    started = time.monotonic()
+    upsert.mark_sync_start(session, repo.id, "packages")
+    try:
+        records = discover_manifests(git)
+        deleted, inserted = store_manifests(session, repo, records)
+        roots = [r.name for r in records if r.workspace_root]
+        report.objects = inserted
+        report.changed = inserted
+        report.detail = {"manifests": inserted, "replaced": deleted, "roots": roots}
+        report.status = "complete"
+        upsert.mark_sync_success(
+            session, repo.id, "packages", objects_seen=inserted, stats=report.detail
+        )
+        progress(f"packages: {inserted} manifests, roots={roots or '-'}")
+    except Exception as exc:  # noqa: BLE001
+        report.status = "failed"
+        report.error = str(exc)
+        session.rollback()
+        upsert.mark_sync_failure(session, repo.id, "packages", str(exc))
+        session.commit()
+        progress(f"packages: FAILED {exc}")
+    report.duration_s = time.monotonic() - started
+    return report
+
+
 def build_signatures(
     session: Session, repo: Repository, *, progress: ProgressFn = _noop
 ) -> SourceReport:
@@ -944,6 +980,13 @@ def sync_repository(
             with session_scope() as session:
                 repo = _require_repository(session, repo_id)
                 report.sources["commits"] = resolve_referenced_commits(
+                    session, repo, git, progress=progress
+                )
+
+        if git is not None:
+            with session_scope() as session:
+                repo = _require_repository(session, repo_id)
+                report.sources["packages"] = sync_package_manifests(
                     session, repo, git, progress=progress
                 )
 

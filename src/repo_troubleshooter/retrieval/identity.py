@@ -9,13 +9,18 @@ Four rules, each learned from a measured failure:
    the script under a Content-Security-Policy directive, a loader bug with a
    similar surface is not their problem, however well the words line up.
 
-2. **Subjects disagree by role, strongest first.** A scoped package is the
-   primary subject: two reports about different packages are about different
-   things, and a shared `node:path`, a shared dependency or even a shared source
-   path cannot buy that off. A path conflict vetoes only when the packages do
-   not already agree. Dependencies and module names *weaken* a match rather than
-   refusing it, and `node:*` builtins do neither - every Node program touches
-   them.
+2. **Subjects disagree by role, strongest first.** A package is *primary* only
+   when the report says it failed - being scoped proves nothing, so
+   `depends on @scope/x` never makes `@scope/x` the subject. Two reports whose
+   primary packages disagree are about different things, and a shared
+   `node:path`, a shared dependency, a shared source path or a shared module
+   name cannot buy that off. A path conflict vetoes only when the primary
+   packages do not already agree. Dependencies, bare mentions and module names
+   *weaken* a match rather than refusing it, and `node:*` builtins do neither.
+
+   Two primary packages that belong to the same product - learned from the
+   repository's own manifests, never from a hardcoded name - are not a conflict:
+   one ships inside the other.
 
 3. **Identity needs agreement across independent feature classes.** One rare
    word, one shared filename or one shared component is a coincidence.
@@ -31,6 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from repo_troubleshooter.fingerprint.features import SymptomFeatures
+from repo_troubleshooter.versions.packages import PackageFamily
 
 # What a shared feature of each class is worth. Builtins are absent on purpose.
 CLASS_WEIGHTS = {
@@ -121,9 +127,11 @@ def evaluate(
     *,
     doc_freq: dict[str, int] | None = None,
     corpus_objects: int = 0,
+    package_family: PackageFamily | None = None,
 ) -> IdentityVerdict:
     """Decide whether a retrieved candidate is the *same incident* as the query."""
     doc_freq = doc_freq or {}
+    family = package_family or PackageFamily()
 
     shared_package = query.subject_packages & candidate.subject_packages
     shared_path = query.subject_paths & candidate.subject_paths
@@ -171,20 +179,28 @@ def evaluate(
             )
 
     # --- rule 2a: primary package conflict. Nothing overrides this. --------
+    #
+    # `subject_packages` holds only packages the report says *failed*. A package
+    # the report merely uses lives in `subject_dependencies` and is never
+    # consulted here, so a shared dependency cannot cancel this conflict.
     if query.subject_packages and candidate.subject_packages and not shared_package:
-        return IdentityVerdict(
-            accepted=False,
-            score=score,
-            rejection="different_subject",
-            shared=shared,
-            reasons=[
-                "the reports name different packages "
-                f"(this report: {sorted(query.subject_packages)[:3]}; "
-                f"candidate: {sorted(candidate.subject_packages)[:3]}). "
-                "A shared runtime builtin, dependency, source path or symbol does "
-                "not make two packages the same subject"
-            ],
-        )
+        related = family.any_related(query.subject_packages, candidate.subject_packages)
+        if not related:
+            return IdentityVerdict(
+                accepted=False,
+                score=score,
+                rejection="different_subject",
+                shared=shared,
+                reasons=[
+                    "the reports blame different packages "
+                    f"(this report: {sorted(query.subject_packages)[:3]}; "
+                    f"candidate: {sorted(candidate.subject_packages)[:3]}). "
+                    "A shared runtime builtin, dependency, source path, module name "
+                    "or symbol does not make two packages the same subject"
+                ],
+            )
+        related_packages = sorted({f"{a} ~ {b}" for a, b in related})
+        shared["related_packages"] = related_packages
 
     # --- rule 2b: source-path conflict, unless the packages already agree --
     if not shared_package and query.subject_paths and candidate.subject_paths and not shared_path:
@@ -213,11 +229,22 @@ def evaluate(
         weakened_by.append("neither report names a subject the other names")
     if query.subject_dependencies and candidate.subject_dependencies and not shared_dependency:
         weakened_by.append("referenced dependencies disagree")
+    if (
+        query.subject_mentioned
+        and candidate.subject_mentioned
+        and not (query.subject_mentioned & candidate.subject_mentioned)
+    ):
+        weakened_by.append("packages mentioned without a role disagree")
 
     # --- rule 3: which combination of classes is enough to mean "same" -----
     rule: str | None = None
+    related_packages = shared.get("related_packages") or []
     if shared_package and (shared_error or shared_struct or shared_behavior):
         rule = "primary_package_plus_second_class"
+    elif related_packages and (shared_error or shared_struct or shared_behavior):
+        # Same product, different package inside it: a real relation, but a
+        # weaker one than naming the same package.
+        rule = "related_package_plus_second_class"
     elif shared_path and (shared_error or shared_struct or shared_behavior):
         rule = "source_path_plus_second_class"
     elif shared_module and (shared_error or shared_struct or len(shared_behavior) >= 2):
@@ -253,6 +280,7 @@ def evaluate(
     # only on a generic symbol or exception type is no longer good enough.
     SUBJECT_RULES = (
         "primary_package_plus_second_class",
+        "related_package_plus_second_class",
         "source_path_plus_second_class",
         "module_plus_second_class",
     )

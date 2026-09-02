@@ -47,21 +47,32 @@ decide, all measured:
   disk, port, TLS, permission, OOM, module-resolution or version-conflict, a
   candidate that does not exhibit that mechanism is a different incident
   (`different_root_cause`);
-* **subjects disagree by role** - a subject carries a role, and each role has
-  its own authority:
+* **subjects disagree by role, and the role comes from context** - being scoped
+  proves nothing about a package. `@acme/theme-kit crashes` and
+  `@acme/app depends on @acme/theme-kit` are opposite facts about the same
+  token, so every package mention keeps its span and the cue that classified it:
 
-  | role | example | authority |
+  | role | how it is decided | authority |
   |---|---|---|
-  | primary package | `@deepseek-ai/dsh-client-modules` | conflict is decisive |
-  | source path | `loader/src/internal.ts` | vetoes only when packages do not already agree |
-  | referenced dependency | `react@^19` | weakens a match, never refuses one |
+  | primary package | the report says it failed: `X crashes`, `X throws`, `could not resolve X` | conflict is decisive |
+  | referenced dependency | the report says it is used: `depends on X`, `imports X`, `peer dependency X` - scoped or not | weakens a match, never refuses one |
+  | mentioned package | named with no cue either way | weakens a match, never refuses one |
+  | source path | `loader/src/internal.ts` | vetoes only when primary packages do not already agree |
   | runtime builtin | `node:path` | can neither prove nor refuse |
-  | module name | `theme-parser` | weakens a match, never refuses one |
+  | module name | `theme-parser`, with corpus/syntax/morphology evidence | weakens a match, never refuses one |
 
-  Module names need corpus, syntax or morphology evidence (`theme-parser` yes,
-  `customer-facing` no - a hyphen is not evidence). A package conflict cannot be
-  bought off by a shared builtin, dependency, path, module name, symbol or
-  exception type: those say how something broke, not what broke;
+  Only a primary-package overlap can fire `primary_package_plus_second_class`,
+  and only primary packages are consulted for the veto - so a shared dependency
+  can never cancel a conflict between two blamed packages, and a query that
+  names only dependencies cannot veto anything at all;
+
+* **packages that ship inside one another are not a conflict** - the product
+  family is read from the repository's own `package.json` manifests at sync
+  time (275 of them here). A relation needs name ancestry on a segment boundary
+  *and* at least one of the names to be published by this repository, so
+  `@scope/dsh` relates to `@scope/dsh-client-modules` while `@scope/cordis` does
+  not, and a look-alike name from outside relates to nothing. No package name
+  appears in the codebase;
 * **environment can only veto** - runtime/OS never contributes to identity.
 
 **Verification evidence.** Committed suite: 35 negative and regression cases,
@@ -80,13 +91,19 @@ config_change/workaround.
 
 * **role precedence** - a foreign package stays foreign when the query also
   carries the candidate's `node:path`, its `node:module`, its source path, its
-  module name, its `__DSH_BOOT__` symbol and its `TypeError`, all at once;
+  module name, its `__DSH_BOOT__` symbol and its `TypeError`, all at once, and
+  also when it *imports the candidate's own package*;
 * **weak roles cannot veto** - a module-name mismatch is refused as
   `insufficient_identity_evidence`, never as a subject veto;
 * **transformation invariance** - padding a correct report with business
-  adjectives, business nouns, quoted runbook text and tracker tags
-  (`[SEV-2] ... TICKET-4821`) must not change the verdict, the rule, or the
-  shared packages, and must not rescue an unrelated report either.
+  adjectives, business nouns, quoted runbook text, tracker tags
+  (`[SEV-2] ... TICKET-4821`) or a healthy scoped dependency
+  (`also depends on @sindresorhus/is`) must not change the verdict, the rule, or
+  the shared packages, and must not rescue an unrelated report either.
+
+`tests/test_package_roles.py` covers the roles themselves: what crashes is
+primary, what is used is a dependency even when scoped, both roles in one
+sentence, spans and cues preserved, and the manifest-driven product relation.
 
 These regression wordings were written by the same developer who wrote the code,
 so they prove the defects are closed - **not** that the system generalises. No
@@ -192,10 +209,10 @@ database that is down, empty, foreign or stale fails within ~3 seconds with a
 command to run, never a traceback; MCP returns a structured error instead of
 hanging.
 
-**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **157
-passed**, measured. The suite has grown each round - 118, then 146 with the
-subject-strength and signature-freshness tests, now 157 with the subject-role
-tests - so a number quoted from an earlier round no longer matches.
+**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **178
+passed**, measured. The suite has grown each round - 118, 146, 157, now 178 with
+the package-role tests - so a number quoted from an earlier round no longer
+matches.
 `tests/test_mcp_roundtrip.py`
 drives a real MCP SDK client: lists tools, calls both, asserts CLI/MCP parity on
 status, action, target, `incident.matched`, `stages.stopped_at` and the
@@ -215,8 +232,9 @@ payloads beyond the current coverage note.
 ## 6. Data
 
 **Current fact.** 550 discussions, 1510 comments, 123 doc files, 7 releases,
-**15,723 stored symptom signatures** (measured after the subject-role rebuild;
-earlier rounds reported inflated figures - see the row-accounting note below). Discussion coverage is still partial and reports `degraded`.
+275 package manifests, **15,667 stored symptom signatures** (measured after the
+package-role rebuild at extractor version 5; earlier rounds reported inflated
+figures - see the row-accounting note below). Discussion coverage is still partial and reports `degraded`.
 A paced backfill (`rt sync … --backfill-pages N`) walks older history a few pages
 at a time, persists its GraphQL cursor, resumes where it stopped, and never claims
 `complete` while pages remain.
@@ -298,12 +316,19 @@ what the database holds, so the counts are now separate:
 
 | count | meaning | last rebuild |
 |---|---|---|
-| `rows_attempted` | (kind, value) pairs offered to the database | 31,368 |
-| `rows_inserted` | of those, actually new | 15,723 |
-| `rows_stored_total` | rows the repository holds afterwards | **15,723** |
+| `rows_attempted` | (kind, value) pairs offered to the database | 31,270 |
+| `rows_inserted` | of those, actually new | 15,667 |
+| `rows_stored_total` | rows the repository holds afterwards | **15,667** |
 
 Earlier rounds reported the attempted figure (32,882, and 19,185 before that) as
 if it were storage. It was not.
+
+By kind, after the package-role rebuild: structural 5,142; behavior 4,666;
+component 2,073; subject_module 1,472; subject_mentioned 822; error 575;
+subject_path 557; subject_dependency 173; subject_builtin 94; cause 75;
+**subject_package 18**. That last number is the point of the rework: a package
+counts as the subject only where a report actually blames it, so package
+identity is now rare and precise rather than granted by token shape.
 
 **Verification evidence.** `rt signatures <repo> --rebuild` prints all three, and
 `rows_inserted` comes from `RETURNING` on the insert rather than from the length

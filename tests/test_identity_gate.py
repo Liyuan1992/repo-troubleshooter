@@ -103,7 +103,11 @@ class TestSubjectDisagreement:
         )
         verdict = evaluate(query, features(self.NPM_THREAD))
         assert not verdict.accepted
-        assert verdict.rejection == "different_subject"
+        # The query blames nothing - `react` is a stated dependency and
+        # `@acme/design-system` is only mentioned - so this is refused for lack
+        # of identity evidence rather than by a package veto. Both are correct;
+        # what matters is that a shared ERESOLVE does not make it a match.
+        assert verdict.rejection in ("different_subject", "insufficient_identity_evidence")
 
     def test_the_same_package_still_matches(self):
         query = features(

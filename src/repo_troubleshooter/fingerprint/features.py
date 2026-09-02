@@ -324,11 +324,19 @@ class SymptomFeatures:
     # only when the packages do not already agree; dependencies and modules
     # weaken a match without refusing it; builtins do neither, because every
     # Node program touches `node:path`.
+    # Packages the report says *failed*. Only these can establish or refuse
+    # package identity.
     subject_packages: set[str] = field(default_factory=set)
-    subject_paths: set[str] = field(default_factory=set)
+    # Packages the report says are merely *used* - `depends on`, `imports`,
+    # `peer dependency`. Scoped or not: being scoped proves nothing.
     subject_dependencies: set[str] = field(default_factory=set)
+    # Packages named with no cue either way. Useful for retrieval, never a veto.
+    subject_mentioned: set[str] = field(default_factory=set)
+    subject_paths: set[str] = field(default_factory=set)
     subject_builtins: set[str] = field(default_factory=set)
     subject_modules: set[str] = field(default_factory=set)
+    # The spans and cues behind the roles above, for the reproduction trace.
+    package_mentions: list[dict[str, Any]] = field(default_factory=list)
     error: set[str] = field(default_factory=set)
     structural: set[str] = field(default_factory=set)
     behavior: set[str] = field(default_factory=set)
@@ -342,6 +350,7 @@ class SymptomFeatures:
             self.subject_packages
             | self.subject_paths
             | self.subject_dependencies
+            | self.subject_mentioned
             | self.subject_builtins
             | self.subject_modules
         )
@@ -364,8 +373,10 @@ class SymptomFeatures:
     def to_json(self) -> dict[str, Any]:
         return {
             "subject_packages": sorted(self.subject_packages),
-            "subject_paths": sorted(self.subject_paths),
             "subject_dependencies": sorted(self.subject_dependencies),
+            "subject_mentioned": sorted(self.subject_mentioned),
+            "package_mentions": self.package_mentions,
+            "subject_paths": sorted(self.subject_paths),
             "subject_builtins": sorted(self.subject_builtins),
             "subject_modules": sorted(self.subject_modules),
             "error": sorted(self.error),
@@ -380,8 +391,9 @@ class SymptomFeatures:
         rows: list[tuple[str, str]] = []
         for kind, values in (
             ("subject_package", self.subject_packages),
-            ("subject_path", self.subject_paths),
             ("subject_dependency", self.subject_dependencies),
+            ("subject_mentioned", self.subject_mentioned),
+            ("subject_path", self.subject_paths),
             ("subject_builtin", self.subject_builtins),
             ("subject_module", self.subject_modules),
             ("error", self.error),
@@ -457,9 +469,11 @@ def extract(text: str | None, *, known_modules: frozenset[str] = frozenset()) ->
 
     return SymptomFeatures(
         error=error,
-        subject_packages=subjects.packages,
-        subject_paths=subjects.paths,
+        subject_packages=subjects.primary_packages,
         subject_dependencies=subjects.dependencies,
+        subject_mentioned=subjects.mentioned_packages,
+        package_mentions=[m.to_json() for m in subjects.package_mentions],
+        subject_paths=subjects.paths,
         subject_builtins=subjects.builtins,
         subject_modules=subjects.modules,
         structural=structural,
@@ -474,8 +488,10 @@ def merge(*feature_sets: SymptomFeatures) -> SymptomFeatures:
     for features in feature_sets:
         merged.error |= features.error
         merged.subject_packages |= features.subject_packages
-        merged.subject_paths |= features.subject_paths
         merged.subject_dependencies |= features.subject_dependencies
+        merged.subject_mentioned |= features.subject_mentioned
+        merged.subject_paths |= features.subject_paths
+        merged.package_mentions += features.package_mentions
         merged.subject_builtins |= features.subject_builtins
         merged.subject_modules |= features.subject_modules
         merged.structural |= features.structural
