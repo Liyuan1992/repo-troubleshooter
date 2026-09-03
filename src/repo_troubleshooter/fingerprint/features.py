@@ -351,6 +351,10 @@ class SymptomFeatures:
     subject_modules: set[str] = field(default_factory=set)
     # The spans and cues behind the roles above, for the reproduction trace.
     package_mentions: list[dict[str, Any]] = field(default_factory=list)
+    # Condition claims this report makes that could not be attached to anything:
+    # `We use @a and @b. It crashes.` - something is broken and we cannot say
+    # what. The gate refuses to act while one of these is outstanding.
+    unresolved_state_assertions: list[dict[str, Any]] = field(default_factory=list)
     error: set[str] = field(default_factory=set)
     structural: set[str] = field(default_factory=set)
     behavior: set[str] = field(default_factory=set)
@@ -394,6 +398,7 @@ class SymptomFeatures:
             "subject_conflicted": sorted(self.subject_conflicted),
             "subject_unresolved": sorted(self.subject_unresolved),
             "package_mentions": self.package_mentions,
+            "unresolved_state_assertions": self.unresolved_state_assertions,
             "subject_paths": sorted(self.subject_paths),
             "subject_builtins": sorted(self.subject_builtins),
             "subject_modules": sorted(self.subject_modules),
@@ -495,6 +500,7 @@ def extract(text: str | None, *, known_modules: frozenset[str] = frozenset()) ->
         subject_conflicted=subjects.conflicted_packages,
         subject_unresolved=subjects.unresolved_packages,
         package_mentions=[m.to_json() for m in subjects.package_mentions],
+        unresolved_state_assertions=[a.to_json() for a in subjects.unresolved_assertions],
         subject_paths=subjects.paths,
         subject_builtins=subjects.builtins,
         subject_modules=subjects.modules,
@@ -516,6 +522,7 @@ def merge(*feature_sets: SymptomFeatures) -> SymptomFeatures:
         merged.subject_unresolved |= features.subject_unresolved
         merged.subject_paths |= features.subject_paths
         merged.package_mentions += features.package_mentions
+        merged.unresolved_state_assertions += features.unresolved_state_assertions
         merged.subject_builtins |= features.subject_builtins
         merged.subject_modules |= features.subject_modules
         merged.structural |= features.structural

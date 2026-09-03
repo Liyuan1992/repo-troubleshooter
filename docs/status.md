@@ -89,6 +89,25 @@ decide, all measured:
   which covers repeats, later sentences and sub-path aliases
   (`@x/inner.js` folds into `@x`);
 
+* **condition claims are bound, wherever they live** - a report's claims about
+  condition (`it crashes`, `this package is healthy`, `the server fell over`)
+  are extracted across the whole text, not inside each package's own window,
+  because a claim in the *next sentence* is still about the package. Each claim
+  binds to a package, to another named subject, or to nothing:
+
+  | claim | binding |
+  |---|---|
+  | `@x crashes` | explicit |
+  | `We import @x! It crashes.` | anaphoric - one antecedent, so it binds |
+  | `We use @a and @b. It crashes.` | **unresolved** - two antecedents, never guessed |
+  | `the server crashes` | other subject - bound elsewhere, not our business |
+  | `imports the healthy @x` | explicit to `@x` - an adjective describes the noun it precedes, not the clause's subject |
+
+  While an unresolved **failure** claim is outstanding, a dependency plus a
+  shared path, module or symbol may not authorise an action: those say where
+  code lives, not what failed. An unresolved *health* claim does not block,
+  because it cannot cause a wrong upgrade;
+
 * **an anaphor after a dependency is not ignored** - `import X, but it crashes`,
   `use X; the package fails` and `installed X@1.2.3, then it hangs` attribute the
   failure to X. A failure whose subject cannot be resolved, or a negation whose
@@ -332,9 +351,9 @@ database that is down, empty, foreign or stale fails within ~3 seconds with a
 command to run, never a traceback; MCP returns a structured error instead of
 hanging.
 
-**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **320
+**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **354
 passed**, measured. The suite has grown each round - 118, 146, 157, 178, 188,
-216, 263, 291, now 320 with the fact-aggregation tests - so a number quoted from an
+216, 263, 291, 320, now 354 with the claim-binding tests - so a number quoted from an
 earlier round no longer matches.
 `tests/test_mcp_roundtrip.py`
 drives a real MCP SDK client: lists tools, calls both, asserts CLI/MCP parity on
@@ -439,9 +458,9 @@ what the database holds, so the counts are now separate:
 
 | count | meaning | last rebuild |
 |---|---|---|
-| `rows_attempted` | (kind, value) pairs offered to the database | 31,313 |
-| `rows_inserted` | of those, actually new | 15,687 |
-| `rows_stored_total` | rows the repository holds afterwards | **15,687** |
+| `rows_attempted` | (kind, value) pairs offered to the database | 31,314 |
+| `rows_inserted` | of those, actually new | 15,689 |
+| `rows_stored_total` | rows the repository holds afterwards | **15,689** |
 
 Earlier rounds reported the attempted figure (32,882, and 19,185 before that) as
 if it were storage. It was not.
@@ -635,6 +654,45 @@ merge too; no such case is known here, and the direction of the error is safe
 (more contradictions, fewer actions).
 
 **Blockers.** None.
+
+---
+
+## 15. Claims that live in another sentence
+
+**Current fact.** An independent run of 12 unseen negatives returned 9 wrong
+upgrades. One cause, three symptoms:
+
+| report | what went wrong |
+|---|---|
+| `We import @nebula/theme-engine! It crashes` | the predicate window stopped at `!`, so `It crashes` never reached the package and it stayed a harmless dependency |
+| the same with a newline instead of `!` | identical |
+| `this package is healthy` | `this` alone was treated as a coreference, leaving `package is healthy` to be parsed as nothing, so the health fact vanished |
+
+Condition claims are now extracted across the whole report and bound
+individually - to a package, to another named subject, or to nothing. A pronoun
+binds only when the antecedent is unique. An unresolved *failure* claim blocks
+any match that rests on a dependency, path, module or symbol.
+
+**Verification evidence.** All seven representative reports return
+`matched=false, action=abstain, target=null` through the installed CLI. The
+public set is now 32 phrasings, each through the CLI and a freshly launched
+`repo-troubleshooter-mcp` stdio process; the real boot-graph symptom still
+matches and still recommends `dsh-v0.1.2-alpha.2`. `uv run pytest` → 354 passed.
+
+Two narrower defects were found and fixed while doing it: the health-word regex
+had no word boundaries, so `fine` matched inside `undefined` and `ok` inside
+`maxTokens`, turning source snippets into health claims; and
+`SCOPED_PACKAGE_RE` swallowed a trailing sentence period, so
+`@scope/pkg.` read as a different package.
+
+**Remaining target.** Binding is clause- and pronoun-based. A claim whose
+subject is a noun phrase that *paraphrases* a package (`the theme engine
+crashes`) is treated as another subject, not as that package.
+
+**Blockers.** None. This round's public set is again developer-authored;
+independent hidden evaluation is the evaluator's to run, and the previous
+round's `unsafe action = 0` claim was true only of the committed set - the same
+caveat applies here.
 
 ## Not built
 

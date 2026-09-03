@@ -44,7 +44,7 @@ from enum import StrEnum
 # Bumped whenever subject or behaviour extraction changes in a way that makes
 # already-mined signatures wrong. The value is stored alongside the mined rows;
 # a database holding an older version must be rebuilt before it may be used.
-FEATURE_EXTRACTOR_VERSION = 10
+FEATURE_EXTRACTOR_VERSION = 11
 
 # Directories every package has; a path tail led by one of these names nothing.
 GENERIC_PATH_DIRS = frozenset(
@@ -408,7 +408,8 @@ HEALTH_BEFORE_RE = re.compile(
 # Where one mention's context ends and the next begins.
 CLAUSE_BREAK_RE = re.compile(r"[.;:!?\n]|\band\b|\bbut\b|\bwhile\b|\bhowever\b|,")
 
-SCOPED_PACKAGE_RE = re.compile(r"@[\w.-]+/[\w.-]+(?:/[\w.-]+)*")
+# A trailing sentence period is not part of the name: `@scope/pkg.` is `@scope/pkg`.
+SCOPED_PACKAGE_RE = re.compile(r"@[\w.-]*[\w-]/[\w.-]*[\w-](?:/[\w.-]*[\w-])*")
 BARE_PACKAGE_RE = re.compile(r"\b([a-z][\w.-]{2,})@[\^~>=<]*\d[\w.-]*")
 BUILTIN_RE = re.compile(r"\bnode:[\w/]+")
 # `name@version` only becomes a dependency when the sentence says it is one.
@@ -488,6 +489,7 @@ class Subjects:
     """The named things a report is about, by role."""
 
     package_mentions: list[PackageMention] = field(default_factory=list)
+    state_assertions: list[StateAssertion] = field(default_factory=list)
     paths: set[str] = field(default_factory=set)
     builtins: set[str] = field(default_factory=set)
     modules: set[str] = field(default_factory=set)
@@ -538,6 +540,16 @@ class Subjects:
     def identifying(self) -> set[str]:
         """Roles that may establish identity. Builtins are excluded on purpose."""
         return self.primary_packages | self.paths | self.modules
+
+    @property
+    def unresolved_assertions(self) -> list[StateAssertion]:
+        """Condition claims we could not attach to anything.
+
+        While one of these exists, a dependency plus a shared path, module or
+        symbol must not authorise an action: something in this report is broken
+        and we do not know what.
+        """
+        return [a for a in self.state_assertions if a.binding == BINDING_UNRESOLVED]
 
     def is_empty(self) -> bool:
         return not self.all
@@ -627,8 +639,8 @@ CESSATION_RE = re.compile(
 # "use X; the package fails". Anything else - "the server crashes" - is a
 # different subject and must not be attributed to X.
 COREFERENCE_RE = re.compile(
-    r"^(?:it|they|this|that|which|"
-    r"the\s+(?:package|module|library|dependency|plugin|component|thing))\s+",
+    r"^(?:it|they|which|"
+    r"(?:this|that|the)\s+(?:package|module|library|dependency|plugin|component|thing))\s+",
     re.IGNORECASE,
 )
 
@@ -893,6 +905,245 @@ def _package_aliases(name: str) -> list[str]:
     return aliases
 
 
+# --- state assertions -------------------------------------------------------
+#
+# A report makes claims about condition: "it crashes", "this package is
+# healthy", "the server fell over". Each such claim has a subject, and the
+# subject decides whether the claim can touch a package at all. Reading claims
+# only inside a package's own window loses every claim that lives in the next
+# sentence, which is how `We import X! It crashes.` kept X filed as a harmless
+# dependency.
+
+CLAUSE_SPLIT_RE = re.compile(
+    r"(?:[.!?](?=\s|$)|[\n;:]|,\s+|\s+(?:and|but|then|yet|however|while|so)\s+)",
+    re.IGNORECASE,
+)
+
+# Subjects that point back at something already named.
+ANAPHOR_RE = re.compile(
+    r"^\s*(?:it|they|these|those"
+    r"|(?:this|that|the)\s+(?:package|module|library|dependency|plugin|component|thing|one))"
+    r"\b",
+    re.IGNORECASE,
+)
+
+# A subject that names something other than a package: "the server", "the host
+# process", "the build". These claims are bound elsewhere and are not our
+# business - but they are bound, so they are not unresolved either.
+OTHER_SUBJECT_RE = re.compile(r"^\s*(?:the|our|my|its|his|her|their|a|an)?\s*[a-z][\w-]+", re.I)
+
+# The positive-state words as whole words, compiled once.
+POSITIVE_WORD_RE = re.compile(rf"\b(?:{_POSITIVE_ALTERNATIVES})\b", re.IGNORECASE)
+
+COPULA_RE = re.compile(r"(?:is|was|are|were|looks?|seems?|remains?)", re.IGNORECASE)
+
+BINDING_EXPLICIT = "explicit"
+BINDING_ANAPHORIC = "anaphoric"
+BINDING_OTHER = "other_subject"
+BINDING_UNRESOLVED = "unresolved"
+
+
+@dataclass(frozen=True)
+class StateAssertion:
+    """One claim about condition, and what it is attached to."""
+
+    state: PackageState
+    binding: str
+    package: str | None
+    subject_text: str
+    cue: str
+    start: int
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "state": str(self.state),
+            "binding": self.binding,
+            "package": self.package,
+            "subject": self.subject_text[:40],
+            "cue": self.cue[:60],
+        }
+
+
+def _clauses(text: str) -> list[tuple[int, str]]:
+    """(offset, clause) pairs. Sentence ends and coordinators both split."""
+    clauses: list[tuple[int, str]] = []
+    position = 0
+    for match in CLAUSE_SPLIT_RE.finditer(text):
+        clause = text[position : match.start()]
+        if clause.strip():
+            clauses.append((position, clause))
+        position = match.end()
+    tail = text[position:]
+    if tail.strip():
+        clauses.append((position, tail))
+    return clauses
+
+
+def _state_in_clause(clause: str) -> tuple[PackageState, str, int, bool] | None:
+    """What this clause asserts, where it starts, and whether it is adjectival.
+
+    A predicate describes the clause's subject; an adjective describes the noun
+    it stands in front of. Binding them the same way makes
+    `it imports the healthy @scope/lib` claim that *it* is healthy.
+    """
+    for offset in range(len(clause)):
+        if offset and not clause[offset - 1].isspace():
+            continue
+        reading = _read_predicate(clause[offset:])
+        if reading is not None:
+            return reading[0], reading[1], offset, False
+
+    # A positive state used adjectivally: "as a healthy dependency". The word
+    # boundaries are load-bearing: without them `fine` matches inside
+    # `undefined` and `ok` inside `maxTokens`, turning source code into health
+    # claims about whatever package the snippet happens to mention.
+    adjective = re.search(POSITIVE_WORD_RE, clause)
+    if adjective:
+        return PackageState.HEALTHY, adjective.group(0), adjective.start(), True
+    return None
+
+
+def extract_state_assertions(
+    text: str, mention_spans: list[tuple[int, int, str]]
+) -> list[StateAssertion]:
+    """Bind every condition claim to a package, to another subject, or to nothing.
+
+    Anaphora binds only when the antecedent is unique: if two different packages
+    were named before `it crashes`, we do not guess which one crashed, and the
+    claim is recorded as unresolved so the gate can refuse.
+    """
+    assertions: list[StateAssertion] = []
+    last_subject_package: str | None = None
+
+    for offset, clause in _clauses(text):
+        clause_end = offset + len(clause)
+        inside = [m for m in mention_spans if offset <= m[0] < clause_end]
+
+        found = _state_in_clause(clause)
+        if found is None:
+            if inside:
+                last_subject_package = inside[-1][2]
+            continue
+        state, cue, predicate_at, adjectival = found
+        if state is PackageState.UNKNOWN:
+            # Not a claim about anything: nothing was asserted.
+            continue
+        subject_text = clause[:predicate_at].strip()
+
+        # A bare positive word with a package standing right after it is a
+        # modifier, not a predicate: `imports the healthy @scope/lib` says
+        # @scope/lib is healthy, not that the importer is.
+        if (
+            not adjectival
+            and state is PackageState.HEALTHY
+            and not COPULA_RE.match(cue)
+            and any(m[0] - offset >= predicate_at for m in inside)
+        ):
+            adjectival = True
+
+        if adjectival:
+            # "it imports the healthy @scope/lib": the adjective describes the
+            # package standing after it, not whoever the clause is about.
+            modified = [m for m in inside if m[0] - offset >= predicate_at]
+            if modified:
+                assertions.append(
+                    StateAssertion(
+                        state, BINDING_EXPLICIT, modified[0][2], "(adjective)", cue, offset
+                    )
+                )
+                continue
+
+        # A package named in this clause owns the claim.
+        preceding = [m for m in inside if m[0] - offset < predicate_at]
+        if preceding:
+            package = preceding[-1][2]
+            last_subject_package = package
+            assertions.append(
+                StateAssertion(state, BINDING_EXPLICIT, package, subject_text, cue, offset)
+            )
+            continue
+
+        if not subject_text:
+            # Coordinated onto the previous clause: same subject as before. With
+            # no previous package subject this is a bare fragment - a log line,
+            # a stack frame - which asserts nothing *about a package*, so it is
+            # dropped rather than recorded as a dangling claim.
+            if last_subject_package:
+                assertions.append(
+                    StateAssertion(
+                        state, BINDING_EXPLICIT, last_subject_package, "(coordinated)", cue, offset
+                    )
+                )
+            continue
+
+        if ANAPHOR_RE.match(subject_text):
+            antecedents = {m[2] for m in mention_spans if m[0] < offset}
+            if len(antecedents) == 1:
+                package = next(iter(antecedents))
+                last_subject_package = package
+                assertions.append(
+                    StateAssertion(state, BINDING_ANAPHORIC, package, subject_text, cue, offset)
+                )
+            else:
+                # Zero antecedents, or several: refuse to guess.
+                assertions.append(
+                    StateAssertion(state, BINDING_UNRESOLVED, None, subject_text, cue, offset)
+                )
+            continue
+
+        # Any other subject names *something* - "the server", a quoted log
+        # prefix, a file. The claim is about that thing, not about a package we
+        # might otherwise blame, so it is bound rather than dangling. Only a
+        # pronoun we cannot resolve stays unresolved, which is the case that can
+        # actually mislead: `We use @a and @b. It crashes.`
+        assertions.append(StateAssertion(state, BINDING_OTHER, None, subject_text, cue, offset))
+        last_subject_package = None
+
+    return assertions
+
+
+def apply_assertions(
+    mentions: list[PackageMention], assertions: list[StateAssertion]
+) -> list[PackageMention]:
+    """Fold bound assertions into the mentions of the packages they name."""
+    states: dict[str, set[PackageState]] = {}
+    for assertion in assertions:
+        if assertion.package and assertion.state is not PackageState.UNKNOWN:
+            states.setdefault(assertion.package, set()).add(assertion.state)
+
+    updated: list[PackageMention] = []
+    for mention in mentions:
+        extra = states.get(mention.canonical, set())
+        combined = extra | ({mention.state} - {PackageState.UNKNOWN})
+        if PackageState.FAILING in combined and PackageState.HEALTHY in combined:
+            state = PackageState.CONFLICTED
+        elif PackageState.CONFLICTED in combined:
+            state = PackageState.CONFLICTED
+        elif PackageState.FAILING in combined:
+            state = PackageState.FAILING
+        elif PackageState.HEALTHY in combined:
+            state = PackageState.HEALTHY
+        else:
+            state = PackageState.UNKNOWN
+        if state is mention.state:
+            updated.append(mention)
+        else:
+            updated.append(
+                PackageMention(
+                    name=mention.name,
+                    canonical=mention.canonical,
+                    relation=mention.relation,
+                    state=state,
+                    start=mention.start,
+                    end=mention.end,
+                    cue=f"{mention.cue}; bound from elsewhere in the report".strip("; "),
+                    context=mention.context,
+                    ambiguous=mention.ambiguous,
+                )
+            )
+    return updated
+
+
 def classify(text: str, known_modules: frozenset[str] = frozenset()) -> Subjects:
     """Split every named subject in ``text`` into its role."""
     subjects = Subjects()
@@ -955,6 +1206,13 @@ def classify(text: str, known_modules: frozenset[str] = frozenset()) -> Subjects
         ):
             subjects.modules.add(token)
     subjects.modules -= subjects.all_packages
+
+    # Claims made anywhere in the report, bound to whatever they are about.
+    named_spans = [(m.start, m.end, m.canonical) for m in subjects.package_mentions]
+    subjects.state_assertions = extract_state_assertions(lowered, named_spans)
+    subjects.package_mentions = apply_assertions(
+        subjects.package_mentions, subjects.state_assertions
+    )
     subjects.package_mentions = aggregate_states(subjects.package_mentions)
 
     return subjects

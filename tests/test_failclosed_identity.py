@@ -101,6 +101,30 @@ PHRASINGS: list[tuple[str, str]] = [
     ("external-dependency-then-it-crashes", "We import @nebula/theme-engine, but it crashes"),
     ("bare-version-then-it-crashes", "installed nebula-theme@1.2.3, then it hangs"),
     ("dependency-then-the-package-fails", "We use @nebula/theme-engine; the package fails"),
+    # --- claims that live in the next sentence ------------------------------
+    ("bang-then-it-crashes", "We import @nebula/theme-engine! It crashes on startup"),
+    ("newline-then-it-crashes", "We import @nebula/theme-engine\nIt crashes on startup"),
+    ("bare-version-bang-it-crashes", "installed nebula-theme@1.2.3! It crashes"),
+    (
+        "dsh-bang-it-is-healthy",
+        "We import @deepseek-ai/dsh-client-modules! It is healthy",
+    ),
+    (
+        "dsh-as-a-healthy-dependency",
+        "@deepseek-ai/dsh-client-modules as a healthy dependency",
+    ),
+    (
+        "this-package-is-healthy",
+        "We depend on @deepseek-ai/dsh-client-modules. this package is healthy",
+    ),
+    (
+        "this-package-does-not-crash",
+        "We depend on @deepseek-ai/dsh-client-modules. this package does not crash",
+    ),
+    (
+        "ambiguous-antecedent",
+        "We use @nebula/theme-engine and @acme/other-thing. It crashes",
+    ),
 ]
 
 CASES = [pytest.param(f"{clause}. {BOOT_SYMPTOM}", id=case_id) for case_id, clause in PHRASINGS]
@@ -256,6 +280,42 @@ class TestFactsAreAggregated:
         subjects = classify("@a/x is healthy but the server crashes")
         assert "@a/x" in subjects.healthy_packages
         assert not subjects.primary_packages
+
+
+class TestClaimsAreBound:
+    """Every condition claim binds to a package, to another subject, or to nothing."""
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("We import @nebula/theme-engine! It crashes", PackageState.FAILING),
+            ("We import @nebula/theme-engine\nIt crashes", PackageState.FAILING),
+            ("installed nebula-theme@1.2.3! It crashes", PackageState.FAILING),
+            ("We import @scope/lib! It is healthy", PackageState.HEALTHY),
+            ("We depend on @scope/lib. this package is healthy", PackageState.HEALTHY),
+            ("We depend on @scope/lib. this package does not crash", PackageState.HEALTHY),
+            ("@scope/lib as a healthy dependency", PackageState.HEALTHY),
+        ],
+    )
+    def test_a_claim_in_the_next_sentence_binds_to_its_package(self, text, expected):
+        """Sentence ends, exclamation marks and newlines do not break the binding."""
+        mention = classify(text).package_mentions[0]
+        assert mention.state is expected, mention.cue
+
+    def test_an_ambiguous_antecedent_is_never_guessed(self):
+        subjects = classify("We use @a/one and @b/two. It crashes")
+        assert subjects.unresolved_assertions, "expected an unbound claim"
+        assert not subjects.primary_packages
+
+    def test_a_claim_about_another_subject_is_bound_elsewhere(self):
+        """`the server crashes` is attached to the server, not left dangling."""
+        subjects = classify("We use @a/one. The server crashes")
+        assert not subjects.unresolved_assertions
+        assert not subjects.primary_packages
+
+    def test_a_trailing_period_is_not_part_of_the_package_name(self):
+        subjects = classify("HTML did not preload @deepseek-ai/dsh-client-modules.")
+        assert "@deepseek-ai/dsh-client-modules" in subjects.all_packages
 
 
 class TestRolesAreFailClosed:

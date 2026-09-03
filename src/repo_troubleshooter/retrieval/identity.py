@@ -200,6 +200,33 @@ def evaluate(
             ],
         )
 
+    # --- rule 0b-bis: a condition claim we could not attach to anything -------
+    #
+    # `We use @a and @b. It crashes.` says something is broken without saying
+    # what. While such a claim is outstanding, a dependency plus a shared path,
+    # module or symbol is not enough to act: those say where code lives, not
+    # what failed. Only agreement on a *blamed* package can carry a match here.
+    #
+    # This does not depend on recognising any phrasing. Any claim whose subject
+    # cannot be resolved - an unknown wording, an ambiguous `it`, a pronoun with
+    # two possible antecedents - lands here.
+    # Only an unattributed *failure* misleads: "something is broken and we cannot
+    # say what" can produce a wrong upgrade, while an unbound "it is fine" cannot.
+    dangling = [a for a in query.unresolved_state_assertions if a.get("state") == "failing"]
+    if dangling and not (shared_package or shared.get("related_packages")):
+        unattached = [a.get("cue", "") for a in dangling][:3]
+        return IdentityVerdict(
+            accepted=False,
+            score=score,
+            rejection="unbound_state_assertion",
+            shared=shared,
+            reasons=[
+                f"this report claims a condition ({unattached}) without saying what it is "
+                "about, so a shared dependency, path, module or symbol cannot establish "
+                "which incident this is"
+            ],
+        )
+
     # --- rule 0c: the report contradicts itself about a package ---------------
     #
     # `X is healthy but crashes` says something is wrong *and* that it is not.
