@@ -542,6 +542,16 @@ class Subjects:
         return self.primary_packages | self.paths | self.modules
 
     @property
+    def uninterpreted_assertions(self) -> list[StateAssertion]:
+        """Claims we could see but not read.
+
+        Something was asserted about a package and we do not know what. That is
+        risk, not silence: it is exactly how an unfamiliar verb used to slip
+        through as a harmless dependency.
+        """
+        return [a for a in self.state_assertions if a.binding == BINDING_UNINTERPRETED]
+
+    @property
     def unresolved_assertions(self) -> list[StateAssertion]:
         """Condition claims we could not attach to anything.
 
@@ -935,12 +945,68 @@ OTHER_SUBJECT_RE = re.compile(r"^\s*(?:the|our|my|its|his|her|their|a|an)?\s*[a-
 # The positive-state words as whole words, compiled once.
 POSITIVE_WORD_RE = re.compile(rf"\b(?:{_POSITIVE_ALTERNATIVES})\b", re.IGNORECASE)
 
-COPULA_RE = re.compile(r"(?:is|was|are|were|looks?|seems?|remains?)", re.IGNORECASE)
+# The trailing token is a word boundary. It was once a literal \x08,
+# which matched nothing, so every bare adjective read as a copula.
+COPULA_RE = re.compile(r"(?:is|was|are|were|looks?|seems?|remains?)\b", re.IGNORECASE)
+
+# Wrappers a report puts around a sentence: quotes, brackets, bullets, quoting
+# markers. They are punctuation, not subjects.
+SUBJECT_WRAPPER_RE = re.compile(r"^[\s\"'`(\[<>*_~#-]+|[\s\"'`)\]>*_~]+$")
+
+# A subject that points at some *other* named thing we can actually see in the
+# text: another package, a path, a file, a builtin. Anything else - a bare noun
+# phrase we cannot resolve - is unresolved, not somebody else's problem.
+ENTITY_IN_SUBJECT_RE = re.compile(r"@[\w.-]+/[\w.-]+|node:[\w/]+|[\w.-]+/[\w.-]+|\.\w{2,4}\b")
+
+# Code, not prose: a clause carrying these is a snippet or a log line, and its
+# unreadable predicates are not claims about a package.
+CODE_MARKER_RE = re.compile(r"[{}()\[\]=<>|&]|=>|::|\bfunction\b|\breturn\b")
+
+
+def _strip_wrapper(text: str) -> str:
+    """Remove quoting, bullets and brackets from around a subject."""
+    stripped = text.strip()
+    previous = None
+    while stripped and stripped != previous:
+        previous = stripped
+        stripped = SUBJECT_WRAPPER_RE.sub("", stripped).strip()
+    return stripped
+
+
+# A clause that has a subject and a verb-ish word asserts *something*, even when
+# we cannot say what. This is deliberately shallow: it does not try to know the
+# verb, only that the sentence is making a statement.
+_CLAIM_SHAPE_RE = re.compile(
+    r"^[\s\"'`(\[<>*_~#-]*[\w@./-]+(?:\s+[\w@./-]+){0,3}\s+[a-z]+(?:s|ed|ing)?\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_a_claim(clause: str) -> bool:
+    """Does this clause state something about its subject?"""
+    stripped = clause.strip()
+    if len(stripped.split()) < 2:
+        return False
+    return bool(_CLAIM_SHAPE_RE.match(stripped))
+
+
+def _subject_prefix(clause: str) -> str:
+    """The first few words of a clause: its subject, roughly."""
+    words = clause.strip().split()
+    return " ".join(words[:4])
+
+
+def _clause_is_prose(clause: str) -> bool:
+    """Only prose makes claims we should try to read."""
+    return not CODE_MARKER_RE.search(clause)
+
 
 BINDING_EXPLICIT = "explicit"
 BINDING_ANAPHORIC = "anaphoric"
 BINDING_OTHER = "other_subject"
 BINDING_UNRESOLVED = "unresolved"
+#: A claim we could see but could not read. Treated as risk, never silence.
+BINDING_UNINTERPRETED = "uninterpreted"
 
 
 @dataclass(frozen=True)
@@ -1019,16 +1085,48 @@ def extract_state_assertions(
         clause_end = offset + len(clause)
         inside = [m for m in mention_spans if offset <= m[0] < clause_end]
 
-        found = _state_in_clause(clause)
-        if found is None:
+        if not _clause_is_prose(clause):
+            # A log line or a code fragment. Its words are output, not a claim
+            # someone is making about a package, and reading them as claims turns
+            # every pasted stack trace into a dangling assertion.
             if inside:
                 last_subject_package = inside[-1][2]
+            continue
+
+        found = _state_in_clause(clause)
+        if found is None:
+            # No readable predicate. If this clause is prose *about* a package -
+            # named here, or referred to by a subject we would have resolved -
+            # then it asserted something we could not read. Recording that is
+            # what stops the next unknown verb ("It malfunctions", "It becomes
+            # unusable") from reading as silence.
+            if inside:
+                last_subject_package = inside[-1][2]
+            if _clause_is_prose(clause) and _looks_like_a_claim(clause):
+                subject = _strip_wrapper(_subject_prefix(clause))
+                target = None
+                if inside:
+                    target = inside[0][2]
+                elif subject and not ENTITY_IN_SUBJECT_RE.search(subject):
+                    antecedents = {m[2] for m in mention_spans if m[0] < offset}
+                    target = next(iter(antecedents)) if len(antecedents) == 1 else None
+                if target is not None or subject:
+                    assertions.append(
+                        StateAssertion(
+                            PackageState.UNKNOWN,
+                            BINDING_UNINTERPRETED,
+                            target,
+                            subject,
+                            clause.strip()[:60],
+                            offset,
+                        )
+                    )
             continue
         state, cue, predicate_at, adjectival = found
         if state is PackageState.UNKNOWN:
             # Not a claim about anything: nothing was asserted.
             continue
-        subject_text = clause[:predicate_at].strip()
+        subject_text = _strip_wrapper(clause[:predicate_at])
 
         # A bare positive word with a package standing right after it is a
         # modifier, not a predicate: `imports the healthy @scope/lib` says
@@ -1076,28 +1174,32 @@ def extract_state_assertions(
                 )
             continue
 
-        if ANAPHOR_RE.match(subject_text):
-            antecedents = {m[2] for m in mention_spans if m[0] < offset}
-            if len(antecedents) == 1:
-                package = next(iter(antecedents))
-                last_subject_package = package
-                assertions.append(
-                    StateAssertion(state, BINDING_ANAPHORIC, package, subject_text, cue, offset)
-                )
-            else:
-                # Zero antecedents, or several: refuse to guess.
-                assertions.append(
-                    StateAssertion(state, BINDING_UNRESOLVED, None, subject_text, cue, offset)
-                )
+        if not ANAPHOR_RE.match(subject_text):
+            # A noun phrase naming nothing we can see: `the server`, `said
+            # package`, `the affected library`. We will not attribute it to the
+            # nearest package - that would blame something the report never
+            # blamed - and we will not wave it through as somebody else's
+            # problem either. It dangles, and the gate decides what that costs.
+            assertions.append(
+                StateAssertion(state, BINDING_UNRESOLVED, None, subject_text, cue, offset)
+            )
+            last_subject_package = None
             continue
 
-        # Any other subject names *something* - "the server", a quoted log
-        # prefix, a file. The claim is about that thing, not about a package we
-        # might otherwise blame, so it is bound rather than dangling. Only a
-        # pronoun we cannot resolve stays unresolved, which is the case that can
-        # actually mislead: `We use @a and @b. It crashes.`
-        assertions.append(StateAssertion(state, BINDING_OTHER, None, subject_text, cue, offset))
-        last_subject_package = None
+        # A pronoun. Bind it only when exactly one antecedent exists.
+        antecedents = {m[2] for m in mention_spans if m[0] < offset}
+        if len(antecedents) == 1:
+            package = next(iter(antecedents))
+            last_subject_package = package
+            assertions.append(
+                StateAssertion(state, BINDING_ANAPHORIC, package, subject_text, cue, offset)
+            )
+        else:
+            # Zero antecedents, or several: refuse to guess.
+            assertions.append(
+                StateAssertion(state, BINDING_UNRESOLVED, None, subject_text, cue, offset)
+            )
+        continue
 
     return assertions
 

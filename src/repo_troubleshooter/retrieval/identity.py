@@ -153,6 +153,14 @@ def evaluate(
         "component": sorted(shared_component),
     }
 
+    candidate_any_package = (
+        candidate.subject_packages
+        | candidate.subject_dependencies
+        | candidate.subject_confirmed_non_primary
+        | candidate.subject_conflicted
+        | candidate.subject_unresolved
+    )
+
     score = (
         _weighted(shared_package, CLASS_WEIGHTS["subject_package"], doc_freq, corpus_objects)
         + _weighted(shared_path, CLASS_WEIGHTS["subject_path"], doc_freq, corpus_objects)
@@ -200,30 +208,94 @@ def evaluate(
             ],
         )
 
-    # --- rule 0b-bis: a condition claim we could not attach to anything -------
+    # --- rule 0b-bis: claims we could not finish reading ----------------------
     #
-    # `We use @a and @b. It crashes.` says something is broken without saying
-    # what. While such a claim is outstanding, a dependency plus a shared path,
-    # module or symbol is not enough to act: those say where code lives, not
-    # what failed. Only agreement on a *blamed* package can carry a match here.
+    # Two kinds, dangerous in different ways:
     #
-    # This does not depend on recognising any phrasing. Any claim whose subject
-    # cannot be resolved - an unknown wording, an ambiguous `it`, a pronoun with
-    # two possible antecedents - lands here.
-    # Only an unattributed *failure* misleads: "something is broken and we cannot
-    # say what" can produce a wrong upgrade, while an unbound "it is fine" cannot.
-    dangling = [a for a in query.unresolved_state_assertions if a.get("state") == "failing"]
-    if dangling and not (shared_package or shared.get("related_packages")):
-        unattached = [a.get("cue", "") for a in dangling][:3]
+    #   targeted   - we know which package it is about and cannot read it:
+    #                "We import @x. It malfunctions." Whatever @x's condition
+    #                is, this report did not say it in words we understand, so
+    #                no action about @x is authorised.
+    #   untargeted - we cannot say what it is about: a log line, a quoted
+    #                fragment. Harmless alone; a problem only when the report
+    #                also names a package the candidate has never heard of,
+    #                because the claim might be about that one.
+    #
+    # An unbound *health* claim never blocks: it cannot cause a wrong upgrade.
+    unread = [a for a in query.unresolved_state_assertions if a.get("state") != "healthy"]
+    unread += list(query.uninterpreted_state_assertions)
+    targeted = [a for a in unread if a.get("package")]
+    untargeted = [a for a in unread if not a.get("package")]
+
+    named_packages = (
+        query.subject_packages
+        | query.subject_dependencies
+        | query.subject_confirmed_non_primary
+        | query.subject_conflicted
+        | query.subject_unresolved
+    )
+    unaccounted = {
+        name
+        for name in named_packages
+        if name not in candidate_any_package
+        and not family.any_related({name}, candidate_any_package)
+    }
+    has_package_identity = bool(shared_package or shared.get("related_packages"))
+
+    if targeted and not has_package_identity:
+        blamed = sorted({str(a["package"]) for a in targeted})[:3]
+        cues = [a.get("cue", "") for a in targeted][:2]
+        return IdentityVerdict(
+            accepted=False,
+            score=score,
+            rejection="unread_claim_about_a_named_package",
+            shared=shared,
+            reasons=[
+                f"this report says something about {blamed} that could not be read ({cues}), "
+                "so its condition was never established and a shared path, module or symbol "
+                "cannot authorise an action"
+            ],
+        )
+
+    if untargeted and unaccounted and not has_package_identity:
+        cues = [a.get("cue", "") for a in untargeted][:2]
         return IdentityVerdict(
             accepted=False,
             score=score,
             rejection="unbound_state_assertion",
             shared=shared,
             reasons=[
-                f"this report claims a condition ({unattached}) without saying what it is "
-                "about, so a shared dependency, path, module or symbol cannot establish "
-                "which incident this is"
+                f"this report claims a condition ({cues}) without saying what it is about, "
+                f"while naming {sorted(unaccounted)[:3]}, which the candidate never mentions"
+            ],
+        )
+
+    # --- rule 0d: a used package whose condition was never established -------
+    #
+    # The conservative rule, chosen over extending the predicate vocabulary. If
+    # the report names a package, never says whether it is failing or fine, and
+    # the candidate does not name it either, then a shared path, module or
+    # symbol cannot say this is the same incident: those describe where code
+    # lives, not what broke. Only agreement on a named package carries it.
+    #
+    # It holds for every phrasing, including the ones nobody has written yet.
+    unestablished = {
+        name
+        for name in (query.subject_dependencies | query.subject_unresolved)
+        if name not in query.subject_confirmed_non_primary
+        and name not in candidate_any_package
+        and not family.any_related({name}, candidate_any_package)
+    }
+    if unestablished and not (shared_package or shared.get("related_packages")):
+        return IdentityVerdict(
+            accepted=False,
+            score=score,
+            rejection="unestablished_subject",
+            shared=shared,
+            reasons=[
+                f"this report names {sorted(unestablished)[:3]} without establishing whether "
+                "it failed or is fine, and the candidate never mentions it; a shared path, "
+                "module or symbol does not make this the same incident"
             ],
         )
 
@@ -279,14 +351,6 @@ def evaluate(
             )
         related_packages = sorted({f"{a} ~ {b}" for a, b in related})
         shared["related_packages"] = related_packages
-
-    candidate_any_package = (
-        candidate.subject_packages
-        | candidate.subject_dependencies
-        | candidate.subject_confirmed_non_primary
-        | candidate.subject_conflicted
-        | candidate.subject_unresolved
-    )
 
     # --- rule 2a-bis: the query blames a package this candidate never names --
     #

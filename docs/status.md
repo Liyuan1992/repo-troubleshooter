@@ -351,9 +351,9 @@ database that is down, empty, foreign or stale fails within ~3 seconds with a
 command to run, never a traceback; MCP returns a structured error instead of
 hanging.
 
-**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **354
+**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **355
 passed**, measured. The suite has grown each round - 118, 146, 157, 178, 188,
-216, 263, 291, 320, now 354 with the claim-binding tests - so a number quoted from an
+216, 263, 291, 320, 354, now 355 with the conservative-rule tests - so a number quoted from an
 earlier round no longer matches.
 `tests/test_mcp_roundtrip.py`
 drives a real MCP SDK client: lists tools, calls both, asserts CLI/MCP parity on
@@ -693,6 +693,65 @@ crashes`) is treated as another subject, not as that package.
 independent hidden evaluation is the evaluator's to run, and the previous
 round's `unsafe action = 0` claim was true only of the committed set - the same
 caveat applies here.
+
+---
+
+## 16. The conservative rule, and what it costs
+
+**Current fact.** An independent run of 20 unseen negatives returned 20 wrong
+upgrades. Three families, one shape: anything the predicate or pronoun
+vocabulary did not recognise read as *silence*.
+
+| family | example | why it passed |
+|---|---|---|
+| unknown verbs | `It malfunctions`, `It times out` | `_read_predicate` missed, so the clause asserted nothing |
+| unknown subjects | `Said package crashes`, `"It crashes"`, `- It crashes` | not on the pronoun whitelist, so filed as another entity's problem |
+| unknown health words | `It is operational`, `It has no issues` | the exculpation never registered, so the package stayed actionable |
+
+Extending the lists was declined. Two structural rules replace them:
+
+* **an unreadable predicate is a claim, not silence.** A prose clause whose
+  subject resolves to a package but whose predicate cannot be classified is
+  recorded as an *uninterpreted claim*. While one is outstanding about a named
+  package, no path, module or symbol may authorise an action about it;
+* **an unresolvable subject dangles.** A noun phrase naming nothing we can see
+  is neither attributed to the nearest package nor waved through as somebody
+  else's problem.
+
+Plus the conservative rule the review asked for: a package the report names but
+whose condition is never established, and which the candidate never mentions,
+cannot be reached by path, module or symbol alone.
+
+Claims are only read from **prose**. A clause carrying code punctuation is
+output, not an assertion - otherwise every pasted stack trace becomes a dangling
+claim.
+
+**Verification evidence.** All 21 reported inputs (20 negatives plus the
+disclosed `the theme engine crashes` boundary) return no unsafe action through
+the installed CLI; the public set now carries all of them, run through the CLI
+and a freshly launched `repo-troubleshooter-mcp` stdio process. The real
+boot-graph symptom still upgrades to `dsh-v0.1.2-alpha.2`, as does the
+`The server is healthy when importing @dsh...` variant that the `COPULA_RE` bug
+had been mis-binding.
+
+**The P1 was real**: `COPULA_RE` ended in a literal `` control character
+instead of a word boundary - a shell-escaping mistake of mine that survived
+review because the regex still compiled. Every bare adjective read as a copula.
+
+**Cost, stated plainly.** The conservative rule loses recall, and two dev-set
+incidents now abstain rather than match:
+
+| case | why |
+|---|---|
+| `para-boot-graph-user-voice` | the long-standing paraphrase gap |
+| `preset-mounting-discovery` | its log line is a claim the system cannot read, attributed to the only package named before it |
+
+Both are registered as known gaps, excluded from Correct Action@1 (n=29) rather
+than deleted or passed by loosening the gate. Recovering them needs a calibrated
+semantic channel - option 2 in the review - not a longer vocabulary.
+
+**Blockers.** None new. The unsafe-action figures continue to describe the
+committed set only.
 
 ## Not built
 

@@ -307,11 +307,18 @@ class TestClaimsAreBound:
         assert subjects.unresolved_assertions, "expected an unbound claim"
         assert not subjects.primary_packages
 
-    def test_a_claim_about_another_subject_is_bound_elsewhere(self):
-        """`the server crashes` is attached to the server, not left dangling."""
+    def test_a_claim_about_an_unrecognised_subject_does_not_blame_the_package(self):
+        """`the server crashes` names something we cannot see.
+
+        We refuse to attribute it to the only package in sight - that would
+        blame something the report never blamed - and equally refuse to wave it
+        through as somebody else's problem. It dangles, and the gate decides
+        what that costs.
+        """
         subjects = classify("We use @a/one. The server crashes")
-        assert not subjects.unresolved_assertions
         assert not subjects.primary_packages
+        assert not subjects.conflicted_packages
+        assert subjects.unresolved_assertions
 
     def test_a_trailing_period_is_not_part_of_the_package_name(self):
         subjects = classify("HTML did not preload @deepseek-ai/dsh-client-modules.")
@@ -411,6 +418,26 @@ class TestElevenPhrasingsThroughBothSurfaces:
         assert cli["recommended_action"]["type"] == "upgrade"
         assert cli["recommended_action"]["target"] == "dsh-v0.1.2-alpha.2"
         assert mcp["recommended_action"]["target"] == cli["recommended_action"]["target"]
+
+    def test_the_copula_boundary_is_a_real_word_boundary(self):
+        """A regex typo once made every bare adjective read as a copula.
+
+        `The server is healthy when importing @dsh...` bound the server's health
+        to the package, and the real incident was then wrongly abstained.
+        """
+        from repo_troubleshooter.fingerprint.subjects import COPULA_RE
+
+        assert COPULA_RE.match("is healthy")
+        assert not COPULA_RE.match("island")
+
+        payload = cli_diagnose(
+            "The server is healthy when importing "
+            "@deepseek-ai/dsh-client-modules/client.js. HTML did not preload "
+            "@deepseek-ai/dsh-client-modules/client.js and __DSH_BOOT__ has zero entries; "
+            "TypeError: e.indexOf is not a function"
+        )
+        assert payload["incident"]["matched"] is True
+        assert payload["recommended_action"]["target"] == "dsh-v0.1.2-alpha.2"
 
     def test_a_twelfth_unseen_phrasing_is_refused_too(self):
         """The point of the invariant: it does not depend on the phrasing."""

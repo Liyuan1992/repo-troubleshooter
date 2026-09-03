@@ -111,6 +111,9 @@ class TestSubjectDisagreement:
             "different_subject",
             "insufficient_identity_evidence",
             "unresolved_subject",
+            "unestablished_subject",
+            "unread_claim_about_a_named_package",
+            "unbound_state_assertion",
         )
 
     def test_the_same_package_still_matches(self):
