@@ -355,10 +355,10 @@ database that is down, empty, foreign or stale fails within ~3 seconds with a
 command to run, never a traceback; MCP returns a structured error instead of
 hanging.
 
-**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **438
+**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **462
 passed**, measured. The suite has grown each round - 118, 146, 157, 178, 188,
-216, 263, 291, 320, 354, 355, 374, 402, now 438 - so a number quoted from an
-earlier round no longer matches, and several places in this document had gone
+216, 263, 291, 320, 354, 355, 374, 402, 438, now 462 - so a number quoted from
+an earlier round no longer matches, and several places in this document had gone
 on quoting one.
 `tests/test_mcp_roundtrip.py`
 drives a real MCP SDK client: lists tools, calls both, asserts CLI/MCP parity on
@@ -404,11 +404,13 @@ design. The second repository has not been started.
 ## 7. Delivery
 
 **Current fact.** Local gates all pass: `uv sync --extra dev --frozen`,
-`ruff check .`, `ruff format --check .`, `mypy src`, `pytest` (438 tests),
+`ruff check .`, `ruff format --check .`, `mypy src`, `pytest` (462 tests),
 `evals/runner.py`, `docker compose up -d`, `db init`, `db ping`, `status`,
-`uv build`, and a clean-venv install of the built wheel running
-`repo-troubleshooter --help`, `diagnose --help`, `repo-troubleshooter-mcp --help`
-and `--check`.
+`uv build`, and a clean-venv install of the built wheel running `db init`, a
+real `diagnose` against the synced database, and the same `diagnose` over stdio
+MCP - not just `--help` and `--check`, which is what let a wheel that could not
+run a single migration pass this list for several rounds
+(`tests/test_wheel_install.py`, section 20).
 
 **Verification evidence.** Commands and outputs are listed in the iteration report,
 each checked by exit code rather than by reading the tail of the output.
@@ -500,10 +502,16 @@ draft of this document quoted 31,314 / 15,689 while the database held
 described. The figures here are re-read from the database after the extractor
 version 12 rebuild rather than carried forward.
 
-By kind, after that rebuild: structural 5,142; behavior 4,666; component 2,073;
-subject_module 1,473; subject_unresolved 749; error 575; subject_path 557;
-subject_package **165**; subject_builtin 94; subject_dependency 72; cause 70;
-subject_confirmed_non_primary 44; subject_conflicted 9.
+By kind, read from the database after the last gate of this round ran:
+structural 5,142; behavior 4,666; component 2,073; subject_module 1,473;
+subject_unresolved 723; error 575; subject_path 557; subject_package **180**;
+subject_builtin 94; subject_dependency 72; cause 70;
+subject_confirmed_non_primary 50; subject_conflicted 14.
+
+The four subject counts moved because claim reading changed, and the figures
+here had been left at the extractor-12 rebuild's. They are now taken last, after
+every gate, for the reason section 20 gives: a document that quotes numbers a
+test run produced is describing the test run.
 That last number is the point of the rework: a package counts as the subject
 only where a report actually blames it, so package identity is rare and precise
 rather than granted by token shape. It rose from 18 to 36 when negated expected
@@ -966,7 +974,7 @@ installed CLI; so do the seven from the round before and the five before that -
 twenty-two negatives in one run. The five positives, including the environment
 line that had been costing one, still upgrade to `dsh-v0.1.2-alpha.2`. The ten
 are in the public phrasing set, so each also runs through a freshly launched
-`repo-troubleshooter-mcp` stdio process. 438 unit tests pass; evals hold at
+`repo-troubleshooter-mcp` stdio process. Unit tests pass; evals hold at
 **68/69** with the one long-standing gap; ruff, format and mypy are clean.
 
 **Remaining target.** This is shallow parsing and will still misread sentences a
@@ -974,6 +982,100 @@ parser would get right - a subject and its predicate separated by a relative
 clause of their own, for instance. What has changed is that no rule now depends
 on a distance or a list of words that a report can step outside of by writing
 one more adjective.
+
+**Blockers.** None new. The unsafe-action figures continue to describe the
+committed set only; the hidden acceptance set is not ours to run, and no remote
+is configured, so there is still no external CI evidence.
+
+---
+
+## 20. Quotation, finiteness, and a wheel that runs
+
+**Current fact.** Four more defects, and one of them was not about reading text
+at all.
+
+### Quoted evidence finds candidates; it must not authorise acting on one
+
+Deleting subjects and claims inside a fence while keeping its paths, symbols and
+error strings was evidence counted in one direction, and it was reachable: a
+block introduced as `Quoted from a retired vendor ticket:` still upgraded,
+because the mechanical strings inside it established identity on their own. The
+staging is now explicit, and matches the three-stage contract:
+
+| stage | what quoted material may do |
+|---|---|
+| `retrieved_candidate` | its paths, symbols and errors may find candidates |
+| `accepted_same_incident` | it may **not** carry identity alone - at least one shared identity feature has to come from outside the quotation |
+| `actionable_incident` | unreachable without that bridge; the report stops at `retrieved_candidate` |
+
+`quoted_only` records which identity values a report evidences *only* inside a
+fence, computed by extracting twice - once as written, once with fenced regions
+blanked out. `quoted_packages` and `quoted_claims` keep what the fence said
+instead of dropping it silently, so a trace exists of material that was read and
+set aside. Nothing depends on recognising the words `documentation` or
+`example`: the structure of the report decides, not a label vocabulary.
+
+A real report that pastes its own stack trace into a fence still upgrades,
+because its prose names the same thing the trace does. A report that is *only*
+a quotation now stops at `retrieved_candidate` - which is what it is.
+
+### A relation verb has to be finite, and the only predicate
+
+The previous round checked whether anything else in the clause was a *copula*.
+`remains healthy` was caught only because `remains` happens to be one, and five
+phrasings walked straight through: `The package using our fallback passed every
+health check`, and the same shape with `survived`, `behaved`, `ran`, and with an
+explicit relative pronoun. Three structural conditions replace that check:
+
+* a bare `-ing` participle after a noun opens a reduced relative clause, and can
+  only be a main predicate with an auxiliary in front of it (`we are using @x`);
+* a finite verb behind `that`/`which`/`who` belongs to the relative clause;
+* whatever the form, if any other word in the clause stands where a predicate
+  stands, the relation verb was not the main one. `ran` is not inflected and no
+  morphology test will catch it - the participle rule is what catches that one.
+
+### The wheel installed cleanly and could not work
+
+`uv build` produced a wheel that passed `--help` and `--check` and then failed on
+the first command that touched the database: `Path doesn't exist:
+...\Lib\migrations`, and over MCP the same missing resource was reported as
+`database_unavailable`. Two causes, both mine: the project root was derived as
+`parents[2]` of an installed source file, and the wheel shipped no migrations or
+profiles at all. Both now live inside the package - `_migrations/` and
+`repo_profiles/`, located through `importlib.resources` - and Alembic is
+configured in memory rather than from an `alembic.ini` that an installed wheel
+does not have.
+
+`tests/test_wheel_install.py` builds the wheel, installs it into a virtual
+environment of its own, and makes it do real work: `db init` running the
+migrations, a `diagnose` that matches the incident, and the same `diagnose` over
+stdio MCP. A `--help` gate could never have caught this, and said so for several
+rounds while the wheel was unusable.
+
+### The tests were writing to the database the document is measured from
+
+`sync_state.stats` for `signatures` read `14 / 0 / 1` - a one-object build - not
+because a build went wrong but because a *test* had run one. It committed, so no
+fixture rollback could undo it, and every number this document quotes is read
+out of that database. Two changes: the `session` fixture always rolls back, and a
+session-scoped guard snapshots eleven upstream tables plus every `sync_state`
+field a build writes, and fails the run if the suite changed any of them. The
+bookkeeping test that caused it now works on a repository row of its own.
+
+**Verification evidence.** Through the installed CLI: the fenced vendor ticket,
+the same fence stating DSH is healthy, a fence labelled as documentation, and
+all five reduced-relative phrasings return no action, each stopping at
+`stopped_at: retrieved_candidate`. Seven positives still upgrade to
+`dsh-v0.1.2-alpha.2`, including a real report that pastes its own trace into a
+fence and `We are using @x`, which the finiteness rule has to keep reading as
+wiring. `pytest` → **462 passed** with the read-only guard active; evals
+**68/69**; ruff, format and mypy clean. The wheel gate ran against the live
+database from a clean install. Signature counts and the by-kind table in
+sections 6 and 9 were re-read from the database after the last gate.
+
+**Remaining target.** The quotation model handles fenced blocks. Indented code
+blocks and quoted-reply prefixes (`> `) are not regions yet, so a report that
+quotes another ticket that way is still read as its own words.
 
 **Blockers.** None new. The unsafe-action figures continue to describe the
 committed set only; the hidden acceptance set is not ours to run, and no remote

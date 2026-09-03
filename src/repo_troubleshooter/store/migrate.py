@@ -22,7 +22,7 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import SQLAlchemyError
 
-from repo_troubleshooter.config import PROJECT_ROOT, get_settings
+from repo_troubleshooter.config import PACKAGE_ROOT, get_settings
 from repo_troubleshooter.store.db import get_engine
 
 # A column no other artifact's schema has. Cheap, decisive ownership signal.
@@ -34,9 +34,21 @@ class SchemaMismatch(RuntimeError):
     """The reachable database is not this project's database."""
 
 
+def migrations_dir() -> Path:
+    """The migration scripts, as shipped inside the package."""
+    return PACKAGE_ROOT / "_migrations"
+
+
 def alembic_config() -> Config:
-    config = Config(str(PROJECT_ROOT / "alembic.ini"))
-    config.set_main_option("script_location", str(PROJECT_ROOT / "migrations"))
+    """Alembic configured from the installed package.
+
+    Built in memory rather than from `alembic.ini`: the ini file is a
+    developer convenience at the top of the checkout, and an installed wheel
+    has no checkout. The only options that matter are where the scripts are and
+    which database to talk to, and both are known here.
+    """
+    config = Config()
+    config.set_main_option("script_location", str(migrations_dir()))
     config.set_main_option("sqlalchemy.url", get_settings().database_url)
     return config
 
@@ -163,4 +175,4 @@ def upgrade_to_head() -> str:
 
 
 def migration_scripts_dir() -> Path:
-    return PROJECT_ROOT / "migrations" / "versions"
+    return migrations_dir() / "versions"

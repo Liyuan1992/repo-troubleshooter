@@ -38,6 +38,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from repo_troubleshooter.fingerprint import subjects as subjects_mod
 from repo_troubleshooter.fingerprint.error import (
     CAMEL_RE,
     DOTTED_RE,
@@ -349,6 +350,16 @@ class SymptomFeatures:
     subject_paths: set[str] = field(default_factory=set)
     subject_builtins: set[str] = field(default_factory=set)
     subject_modules: set[str] = field(default_factory=set)
+    # Feature values this report evidences *only* inside a fenced block. A
+    # quotation can say what a machine printed - so these still find candidates
+    # in stage one - but it cannot say that this reporter is having that
+    # problem, so they cannot carry identity on their own in stage two.
+    quoted_only: set[str] = field(default_factory=set)
+    # Packages and condition claims found inside a fence. Recorded rather than
+    # deleted: dropping them silently left no trace of material that had been
+    # read and thrown away.
+    quoted_packages: set[str] = field(default_factory=set)
+    quoted_claims: list[dict[str, Any]] = field(default_factory=list)
     # The spans and cues behind the roles above, for the reproduction trace.
     package_mentions: list[dict[str, Any]] = field(default_factory=list)
     # Condition claims this report makes that could not be attached to anything:
@@ -500,7 +511,7 @@ def extract(text: str | None, *, known_modules: frozenset[str] = frozenset()) ->
     # A symbol is not a subject: `e.indexOf` belongs to whoever called it.
     structural -= subjects.all
 
-    return SymptomFeatures(
+    features = SymptomFeatures(
         error=error,
         subject_packages=subjects.primary_packages,
         subject_dependencies=subjects.dependencies,
@@ -519,6 +530,43 @@ def extract(text: str | None, *, known_modules: frozenset[str] = frozenset()) ->
         component=component_features(signature),
         causes=detect_causes(signature),
     )
+    _record_quotation(features, signature, known_modules)
+    return features
+
+
+def identity_values(features: SymptomFeatures) -> set[str]:
+    """Everything that can carry same-incident identity on its own."""
+    return (
+        features.error
+        | features.structural
+        | features.subject_paths
+        | features.subject_modules
+        | features.subject_packages
+        | features.subject_dependencies
+    )
+
+
+def _record_quotation(
+    features: SymptomFeatures, signature: str, known_modules: frozenset[str]
+) -> None:
+    """Split this report's evidence into what it states and what it quotes.
+
+    Fenced material is kept, not deleted: its packages and claims are recorded
+    as quoted, and the identity values it is the *only* source of are marked so
+    the gate can decline to act on them alone.
+    """
+    spans = subjects_mod.quoted_spans(signature)
+    if not spans:
+        return
+    without = subjects_mod.blank_quoted(signature)
+    if without != signature:
+        features.quoted_only = identity_values(features) - identity_values(
+            extract(without, known_modules=known_modules)
+        )
+    inside = "\n".join(signature[start:end] for start, end in spans)
+    quoted = classify(inside, known_modules)
+    features.quoted_packages = set(quoted.all_packages)
+    features.quoted_claims = [a.to_json() for a in quoted.state_assertions]
 
 
 def merge(*feature_sets: SymptomFeatures) -> SymptomFeatures:
@@ -531,6 +579,9 @@ def merge(*feature_sets: SymptomFeatures) -> SymptomFeatures:
         merged.subject_conflicted |= features.subject_conflicted
         merged.subject_unresolved |= features.subject_unresolved
         merged.subject_paths |= features.subject_paths
+        merged.quoted_only |= features.quoted_only
+        merged.quoted_packages |= features.quoted_packages
+        merged.quoted_claims += features.quoted_claims
         merged.package_mentions += features.package_mentions
         merged.unresolved_state_assertions += features.unresolved_state_assertions
         merged.uninterpreted_state_assertions += features.uninterpreted_state_assertions

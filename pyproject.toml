@@ -64,4 +64,8 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q"
-markers = ["live: hits the real GitHub API or a real clone", "db: requires PostgreSQL"]
+markers = [
+    "live: hits the real GitHub API or a real clone",
+    "db: requires PostgreSQL",
+    "slow: builds and installs the wheel",
+]

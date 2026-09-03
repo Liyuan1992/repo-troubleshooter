@@ -1052,6 +1052,13 @@ def _subject_prefix(clause: str) -> str:
     return " ".join(words[:4])
 
 
+# The relative pronouns. A finite verb behind one of these belongs to the
+# relative clause, not to the sentence.
+RELATIVE_PRONOUN_RE = re.compile(r"\b(?:that|which|who|whom|whose)\b", re.IGNORECASE)
+
+# Punctuation to strip from a token before asking what shape it is.
+STRIP_CHARS = ".,;:!?()[]\"'"
+
 # Words that open a subordinate clause. Whatever verb follows one, it is not
 # the main predicate.
 SUBORDINATOR_RE = re.compile(
@@ -1202,13 +1209,31 @@ def _is_relation_statement(clause: str) -> bool:
     match = RELATION_STATEMENT_RE.search(head)
     if match is None:
         return False
-    # If the clause predicates something else as well, the relation verb was
-    # not its main predicate: `the package using our fallback shim remains
-    # operational` is a state claim with a reduced relative clause inside it,
-    # and `it is operational using plugins` is a state claim with a trailing
-    # one. Counting words from the start could not tell either of those from
-    # `the project requires @x`.
-    return not COPULA_WORD_RE.search(head[: match.start()] + " " + head[match.end() :])
+    before, after = head[: match.start()], head[match.end() :]
+
+    # `The package using our fallback ...`: a bare participle standing after a
+    # noun opens a reduced relative clause. It can only be a main predicate
+    # with an auxiliary in front of it - `we are using @x` - and without one it
+    # is describing the noun, not predicating anything of it.
+    verb = match.group(0).strip().lower()
+    if verb.endswith("ing"):
+        preceding = before.split()
+        if not preceding or not AUXILIARY_RE.match(preceding[-1].strip(STRIP_CHARS)):
+            return False
+        # `we are using @x`: the auxiliary belongs to the relation verb, so it
+        # is not something else being predicated.
+        before = " ".join(preceding[:-1])
+
+    # `The package that uses our fallback ...`: an explicit relative pronoun
+    # says the same thing about a finite verb.
+    if RELATIVE_PRONOUN_RE.search(before):
+        return False
+
+    # And whatever the form, if something else in the clause stands where a
+    # predicate stands, the relation verb was not the main one. `passed`,
+    # `survived`, `behaved` and `ran` all do; only checking for a copula here
+    # let every one of them through.
+    return not any(_verb_shaped(word) for word in (before + " " + after).split())
 
 
 BINDING_EXPLICIT = "explicit"
@@ -1287,6 +1312,22 @@ def quoted_spans(text: str) -> list[tuple[int, int]]:
     if len(marks) % 2:
         spans.append((marks[-1].end(), len(text)))
     return spans
+
+
+def blank_quoted(text: str) -> str:
+    """The same text with fenced regions replaced by spaces.
+
+    Offsets are preserved, so anything measured on this string lines up with
+    the original. Extracting twice - once with quotations, once without - is
+    what separates a path this reporter is describing from one they pasted out
+    of somebody else's ticket.
+    """
+    blanked = list(text)
+    for start, end in quoted_spans(text):
+        for index in range(start, min(end, len(blanked))):
+            if blanked[index] != "\n":
+                blanked[index] = " "
+    return "".join(blanked)
 
 
 def _inside(position: int, spans: Sequence[tuple[int, int]]) -> bool:

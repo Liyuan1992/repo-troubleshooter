@@ -193,6 +193,31 @@ PHRASINGS: list[tuple[str, str]] = [
         "@deepseek-ai/dsh-client-modules crashes! "
         "This carefully audited bundled runtime component remains operational.",
     ),
+    # --- a reduced relative clause is not a wiring statement ----------------
+    (
+        "reduced-passed",
+        "@deepseek-ai/dsh-client-modules crashes! "
+        "The package using our fallback passed every health check.",
+    ),
+    (
+        "reduced-survived",
+        "@deepseek-ai/dsh-client-modules crashes! "
+        "The component requiring our fallback survived all validation.",
+    ),
+    (
+        "reduced-behaved",
+        "@deepseek-ai/dsh-client-modules crashes! "
+        "The module importing the compatibility layer behaved normally.",
+    ),
+    (
+        "reduced-ran",
+        "@deepseek-ai/dsh-client-modules crashes! The library using our shim ran without issues.",
+    ),
+    (
+        "explicit-relative",
+        "@deepseek-ai/dsh-client-modules crashes! "
+        "The package that uses our fallback passed every health check.",
+    ),
 ]
 
 CASES = [pytest.param(f"{clause}. {BOOT_SYMPTOM}", id=case_id) for case_id, clause in PHRASINGS]
@@ -449,6 +474,11 @@ class TestRolesAreFailClosed:
         "wasnt-defective",
         "reduced-relative-clause",
         "trailing-relation-verb",
+        "reduced-passed",
+        "reduced-survived",
+        "reduced-behaved",
+        "reduced-ran",
+        "explicit-relative",
         "many-modifiers",
     }
 
@@ -654,6 +684,52 @@ class TestElevenPhrasingsThroughBothSurfaces:
         """
         assert feat.extract(f"{clause} {BOOT_SYMPTOM}").pointed_unread_assertions
         assert cli_diagnose(f"{clause} {BOOT_SYMPTOM}")["recommended_action"]["type"] not in UNSAFE
+
+    QUOTED_REPORTS = (
+        "Quoted from a retired vendor ticket:\n```text\n@nebula/theme-engine crashes. {boot}\n```",
+        "Quoted from a retired vendor ticket:\n"
+        "```text\n@deepseek-ai/dsh-client-modules is healthy. {boot}\n```",
+        "Documentation example only:\n```text\n{boot}\n```",
+    )
+
+    @pytest.mark.parametrize("template", QUOTED_REPORTS)
+    def test_quotation_finds_a_candidate_and_cannot_authorise_one(self, template):
+        """A fence may reach stage one. It may not reach stage three alone.
+
+        Deleting the subjects and claims inside a fence while keeping its paths,
+        symbols and error strings counted its evidence in one direction only,
+        and a block introduced as somebody else's ticket still upgraded.
+        """
+        report = template.format(boot=BOOT_SYMPTOM)
+        features = feat.extract(report)
+        assert features.quoted_only, "nothing was recognised as quoted-only evidence"
+        payload = cli_diagnose(report)
+        assert payload["recommended_action"]["type"] not in UNSAFE
+        assert payload["stages"]["stopped_at"] == "retrieved_candidate"
+
+    def test_a_report_that_quotes_its_own_trace_still_upgrades(self):
+        """The staging must not cost a real report that fences its stack trace."""
+        real = (
+            "dsh web starts but __DSH_BOOT__ has zero entries and zero batches; "
+            "client-modules reports HTML did not preload "
+            "@deepseek-ai/dsh-client-modules/client.js, and the host throws "
+            "TypeError: e.indexOf is not a function"
+        )
+        report = real + "\nUpstream example for reference:\n```text\nsome unrelated snippet\n```"
+        payload = cli_diagnose(report)
+        assert payload["incident"]["matched"] is True
+        assert payload["recommended_action"]["target"] == "dsh-v0.1.2-alpha.2"
+
+    def test_wiring_still_reads_as_wiring_when_it_is_progressive(self):
+        """`We are using @x` is a relation statement; the auxiliary is part of it."""
+        real = (
+            "dsh web starts but __DSH_BOOT__ has zero entries and zero batches; "
+            "client-modules reports HTML did not preload "
+            "@deepseek-ai/dsh-client-modules/client.js, and the host throws "
+            "TypeError: e.indexOf is not a function"
+        )
+        payload = cli_diagnose(f"We are using @deepseek-ai/dsh-client-modules. {real}")
+        assert payload["recommended_action"]["target"] == "dsh-v0.1.2-alpha.2"
 
     def test_a_fenced_block_is_not_this_report_s_subject(self):
         """A documentation example must not become the package we act on.

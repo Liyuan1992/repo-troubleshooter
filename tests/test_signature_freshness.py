@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 import pytest
@@ -150,34 +151,52 @@ class TestInvalidationBookkeeping:
         recorded = set(SignatureStats().to_json()) | {"extractor_version"}
         assert recorded <= set(BUILD_STATS), sorted(recorded - set(BUILD_STATS))
 
-    def test_a_finished_rebuild_clears_the_stale_mark(self, session, synced_repo):
+    def test_a_finished_build_clears_the_stale_mark(self, session):
         """And the reading must not stick at the other false state either.
 
         An invalidation marks the source stale with zero objects; a build that
         finishes has to say so, or the database ends up holding rows while
         `rt status` still reports `stale / 0`.
+
+        This runs against a repository row of its own. The first version of it
+        called the real build on the synced repository, which commits, and so
+        overwrote that repository's recorded counts with a one-object build -
+        a test that changed the data the rest of the suite reads.
         """
-        from repo_troubleshooter.relations.signatures import build_for_repository
+        from repo_troubleshooter.relations.signatures import (
+            SignatureStats,
+            _record_extractor_version,
+        )
+        from repo_troubleshooter.store.models import Repository
+
+        name = f"bookkeeping-{uuid.uuid4().hex[:8]}"
+        scratch = Repository(owner="rt-test", name=name, full_name=f"rt-test/{name}")
+        session.add(scratch)
+        session.flush()
+        session.add(
+            SyncState(
+                repo_id=scratch.id,
+                source="signatures",
+                status="stale",
+                objects_seen=0,
+                stats={},
+            )
+        )
+        session.flush()
+
+        stats = SignatureStats(objects=3, rows_attempted=9, rows_inserted=7, rows_stored_total=7)
+        _record_extractor_version(session, scratch, stats)
 
         state = session.scalar(
             select(SyncState).where(
-                SyncState.repo_id == synced_repo.id, SyncState.source == "signatures"
+                SyncState.repo_id == scratch.id, SyncState.source == "signatures"
             )
         )
         assert state is not None
-        before_status, before_seen = state.status, state.objects_seen
-        state.status = "stale"
-        state.objects_seen = 0
-        session.flush()
-        try:
-            stats = build_for_repository(session, synced_repo, limit=1)
-            session.refresh(state)
-            assert state.status == "complete"
-            assert state.objects_seen == stats.rows_stored_total
-        finally:
-            state.status = before_status
-            state.objects_seen = before_seen
-            session.flush()
+        assert state.status == "complete"
+        assert state.objects_seen == stats.rows_stored_total
+        assert state.last_success_at is not None
+        assert state.stats["extractor_version"] == FEATURE_EXTRACTOR_VERSION
 
 
 class TestMissingIsRefused:

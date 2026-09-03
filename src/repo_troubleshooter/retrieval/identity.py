@@ -125,6 +125,21 @@ def _weighted(values: set[str], weight: float, doc_freq: dict[str, int], corpus:
     return total
 
 
+#: The shared feature classes that can establish same-incident identity on
+#: their own. `behavior` and `component` describe what kind of problem this is,
+#: not that it is the same one, and the gate already refuses a match resting on
+#: them alone.
+IDENTITY_CLASSES = (
+    "subject_package",
+    "related_packages",
+    "subject_path",
+    "subject_module",
+    "subject_dependency",
+    "error",
+    "structural",
+)
+
+
 def evaluate(
     query: SymptomFeatures,
     candidate: SymptomFeatures,
@@ -534,6 +549,36 @@ def evaluate(
                 f"shared features do not establish identity, only topical similarity ({detail})"
             ],
         )
+
+    # --- the quotation bridge ------------------------------------------------
+    #
+    # A fenced block is material the reporter is showing: a documentation
+    # example, an old ticket, somebody else's output. Its paths and symbols are
+    # real strings and may find candidates - stage one - but nothing inside it
+    # says that *this* reporter has that problem. So identity has to rest on at
+    # least one thing stated outside the quotation. Without that bridge the
+    # report stops at retrieved_candidate, which is exactly what it is.
+    quoted_only = query.quoted_only
+    if quoted_only:
+        bridging = {
+            value
+            for name in IDENTITY_CLASSES
+            for value in shared.get(name, ())
+            if value not in quoted_only
+        }
+        if not bridging:
+            return IdentityVerdict(
+                accepted=False,
+                score=score,
+                rejection="quoted_evidence_only",
+                shared=shared,
+                reasons=[
+                    "everything this report and the candidate share "
+                    f"({sorted(quoted_only)[:3]}) appears only inside quoted material, so "
+                    "nothing the reporter states themselves identifies this as the same "
+                    "incident"
+                ],
+            )
 
     # A weaker-role disagreement does not refuse the match, but a match resting
     # only on a generic symbol or exception type is no longer good enough.
