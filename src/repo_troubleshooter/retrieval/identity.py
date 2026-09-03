@@ -36,6 +36,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from repo_troubleshooter.fingerprint.features import SymptomFeatures
+from repo_troubleshooter.fingerprint.subjects import (
+    SOURCE_EXPLICIT_PACKAGE,
+    SOURCE_RESOLVED_ANAPHOR,
+)
 from repo_troubleshooter.versions.packages import PackageFamily
 
 # What a shared feature of each class is worth. Builtins are absent on purpose.
@@ -235,6 +239,17 @@ def evaluate(
     # claim about a package. Which one is unknown, so no package is safe to act
     # on, and identity from a path or symbol cannot settle it either.
     pointed_unresolved = [a for a in query.pointed_unread_assertions if not a.get("package")]
+    # Health is not the harmless direction. "An unbound health claim cannot
+    # cause a wrong upgrade" holds only for a claim about nothing in
+    # particular; one whose subject points at a package is retracting a
+    # failure, and dropping it let `@x crashes! Said package is healthy.` act
+    # on the failure it had just taken back.
+    pointed_unresolved += [
+        a
+        for a in query.unresolved_state_assertions
+        if a.get("state") == "healthy"
+        and a.get("source") in {SOURCE_EXPLICIT_PACKAGE, SOURCE_RESOLVED_ANAPHOR}
+    ]
     weak_targeted = [
         a for a in unread if a.get("package") and a.get("binding") == "uninterpreted_weak"
     ]
@@ -272,21 +287,6 @@ def evaluate(
                 f"this report says something about {blamed} that could not be read ({cues}), "
                 "so its condition was never established and a shared path, module or symbol "
                 "cannot authorise an action"
-            ],
-        )
-
-    if pointed_unresolved:
-        cues = [a.get("cue", "") for a in pointed_unresolved][:2]
-        subjects_seen = [a.get("subject", "") for a in pointed_unresolved][:2]
-        return IdentityVerdict(
-            accepted=False,
-            score=score,
-            rejection="unread_claim_about_an_unnamed_package",
-            shared=shared,
-            reasons=[
-                f"this report states a condition of some package ({subjects_seen}) in words "
-                f"that could not be read ({cues}), and never says which package, so no "
-                "action about any package is authorised"
             ],
         )
 
@@ -360,6 +360,27 @@ def evaluate(
                 conflicting_causes=sorted(query.causes),
                 reasons=[_different_cause_reason(query.causes, candidate.causes)],
             )
+
+    # --- rule 1b: a claim about some package, in words we could not read ---
+    #
+    # Both refusals are correct; this one runs after the stated cause because a
+    # report that names its own cause has told us something firmer than "a
+    # sentence here could not be read", and the reason a user sees should be
+    # the firmer one.
+    if pointed_unresolved:
+        cues = [a.get("cue", "") for a in pointed_unresolved][:2]
+        subjects_seen = [a.get("subject", "") for a in pointed_unresolved][:2]
+        return IdentityVerdict(
+            accepted=False,
+            score=score,
+            rejection="unread_claim_about_an_unnamed_package",
+            shared=shared,
+            reasons=[
+                f"this report states a condition of some package ({subjects_seen}) in words "
+                f"that could not be read ({cues}), and never says which package, so no "
+                "action about any package is authorised"
+            ],
+        )
 
     # --- rule 2a: primary package conflict. Nothing overrides this. --------
     #

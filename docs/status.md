@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-09-03 (mainline iteration on baseline `bf29314`). Fields stay
+Updated: 2026-09-04 (mainline iteration on baseline `bf29314`). Fields stay
 separated: **current fact**, **verification evidence**, **remaining target**,
 **blockers**. Nothing counts as verified because a test exists; each row names the
 observation behind it.
@@ -277,7 +277,8 @@ signature only because a real reporter wrote it.
 or batches, and the browser never preloads the dsh client JavaScript module"* -
 now matches discussion 5084 by `behaviour_profile_plus_component` and still goes
 through the version and applicability gates to `upgrade -> dsh-v0.1.2-alpha.2`.
-19,185 signatures mined from 505 objects.
+15,689 signatures mined from 500 objects (the 19,185/505 quoted here for
+several rounds was an attempted-row count from a superseded build; see section 9).
 
 **Remaining target.** One documented recall gap, kept in the suite and excluded
 from Correct Action@1 rather than deleted: `para-boot-graph-user-voice`, a rewrite
@@ -354,10 +355,11 @@ database that is down, empty, foreign or stale fails within ~3 seconds with a
 command to run, never a traceback; MCP returns a structured error instead of
 hanging.
 
-**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **355
+**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **438
 passed**, measured. The suite has grown each round - 118, 146, 157, 178, 188,
-216, 263, 291, 320, 354, now 355 with the conservative-rule tests - so a number quoted from an
-earlier round no longer matches.
+216, 263, 291, 320, 354, 355, 374, 402, now 438 - so a number quoted from an
+earlier round no longer matches, and several places in this document had gone
+on quoting one.
 `tests/test_mcp_roundtrip.py`
 drives a real MCP SDK client: lists tools, calls both, asserts CLI/MCP parity on
 status, action, target, `incident.matched`, `stages.stopped_at` and the
@@ -378,7 +380,7 @@ payloads beyond the current coverage note.
 
 **Current fact.** 550 discussions, 1510 comments, 123 doc files, 7 releases,
 275 package manifests, **15,689 stored symptom signatures** (a SQL count taken
-after the rebuild at extractor version 12, and equal to the `rows_stored_total`
+after the rebuild at extractor version 14, and equal to the `rows_stored_total`
 the rebuild recorded; earlier rounds reported inflated figures - see the
 row-accounting note below). Discussion coverage is still partial and reports `degraded`.
 A paced backfill (`rt sync … --backfill-pages N`) walks older history a few pages
@@ -402,7 +404,7 @@ design. The second repository has not been started.
 ## 7. Delivery
 
 **Current fact.** Local gates all pass: `uv sync --extra dev --frozen`,
-`ruff check .`, `ruff format --check .`, `mypy src`, `pytest` (118 tests),
+`ruff check .`, `ruff format --check .`, `mypy src`, `pytest` (438 tests),
 `evals/runner.py`, `docker compose up -d`, `db init`, `db ping`, `status`,
 `uv build`, and a clean-venv install of the built wheel running
 `repo-troubleshooter --help`, `diagnose --help`, `repo-troubleshooter-mcp --help`
@@ -440,8 +442,18 @@ stale features. The migration
 `8f2c496d97c2_claim_reading_rules_invalidate_` invalidated version 11 when
 structural code detection and relation statements changed what a clause
 asserts, and `4b4507bd30a7_claim_strength_follows_target_source` invalidated
-version 12 when claim strength moved onto the target's source. The current
-version is **13**.
+version 12 when claim strength moved onto the target's source, and
+`02fc7f6885ae_quotation_regions_and_predicate_position` invalidated version 13
+when quotation regions and predicate position changed what a clause asserts.
+The current version is **14**.
+
+Invalidation is one function, `store/signature_invalidation.py`, because doing
+only half of it produced a false completion: the rows were deleted and the
+version cleared, but `sync_state` still said `complete` with the row count of
+the rows just deleted, so `rt status` reported a finished build over an empty
+table. It now marks the source `stale` and zeroes the counts, and a finished
+rebuild sets `complete` again - measured in both directions on the live
+database.
 
 **Verification evidence.** After `db init` on the existing database, `diagnose`
 refused with `no symptom signatures are stored ... build them with:
@@ -449,8 +461,9 @@ repo-troubleshooter signatures <repo>` and exited non-zero; after
 `rt signatures <repo> --rebuild` it answered again. The version 12 upgrade was
 walked the same way on the live database: `alembic upgrade head`, then
 `diagnose` exiting 1 with the stale-signature refusal, then a rebuild
-(31,313 attempted / 15,689 inserted, `extractor_version: 12` recorded), then the
-same query answering, and again for version 13.
+(31,313 attempted / 15,689 inserted recorded), then the same query answering;
+and again for versions 13 and 14. After the version 14 migration `rt status`
+read `signatures stale / 0`, and after the rebuild `complete / 15689`.
 `tests/test_signature_freshness.py` rewinds the stored version and asserts the
 refusal on all three paths - engine (raises), CLI (non-zero exit,
 no traceback, `--rebuild` in the message) and MCP (`signatures_stale` structured
@@ -481,7 +494,7 @@ if it were storage. It was not.
 
 These three come from `sync_state.stats` for source `signatures`, and a direct
 `SELECT count(*)` on `symptom_signature` returns the same 15,689. The extractor
-version 13 rebuild produced the same three figures. An earlier
+version 13 and 14 rebuilds produced the same three figures. An earlier
 draft of this document quoted 31,314 / 15,689 while the database held
 31,316 / 15,691 - numbers from a *different* rebuild than the one being
 described. The figures here are re-read from the database after the extractor
@@ -879,16 +892,88 @@ the installed CLI, and so do the five from the previous round. The four
 positives - the bare boot-graph report and three relation-prefixed variants -
 still upgrade to `dsh-v0.1.2-alpha.2`. The seven are in the public phrasing set,
 so each also runs through a freshly launched `repo-troubleshooter-mcp` stdio
-process, which must abstain and must agree with the CLI. 402 unit tests pass;
+process, which must abstain and must agree with the CLI. Unit tests pass;
 evals are **68/69** with the one long-standing gap; ruff, format and mypy are
 clean. Extractor version 12 -> 13 with an invalidation migration, walked on the
 live database: upgrade, refusal, rebuild (31,313 / 15,689 / 15,689,
 `extractor_version: 13`), answer.
 
-**Remaining target.** The head-noun and predicate-position rules are shallow
-parsing, not a parser. A subject that puts its head noun more than two words
-after the determiner, or a main predicate more than four words in, is outside
-what they see.
+**Remaining target.** Both windows this section described as a boundary were
+unsafe paths, not future work: one more adjective (`this carefully audited
+bundled runtime component`) put a subject outside the head-noun window, and a
+relation verb four words in exempted a whole clause. Section 19 replaces both
+with tests that do not have a window. Writing a boundary down and then writing
+`Blockers: None` under it was wrong, and this section should have said so.
+
+**Blockers.** None new. The unsafe-action figures continue to describe the
+committed set only; the hidden acceptance set is not ours to run, and no remote
+is configured, so there is still no external CI evidence.
+
+---
+
+## 19. Reading a claim, not matching its wording
+
+**Current fact.** Review found five more ways past the gate. Every one of them
+was the same mistake in a different place: a *list* or a *window* standing in
+for a structural question.
+
+**Strength was only recorded on claims we could not read.** A claim whose
+predicate we *did* understand went down the other path, where the subject was
+still matched against the pronoun list alone. `@x crashes! Said package is
+healthy.` therefore produced an unresolved health claim, which the gate drops as
+harmless. It is not harmless - it retracts the failure the sentence before it
+reported. Both paths now ask the same question, and a health claim whose subject
+points at a package blocks like any other pointed claim.
+
+**A predicate we could see and not classify was dropped.** `It did not
+malfunction` and `It wasn't defective` were read as UNKNOWN and then discarded,
+recording nothing at all - exactly the silence the unread-claim path exists to
+prevent. An unclassifiable predicate now goes down that path like any other.
+
+**Predicate position was a word count.** A relation verb within four words of
+the start exempted the clause, so `The package using our fallback shim remains
+operational` was filed as wiring and deleted. Position cannot tell a reduced
+relative clause from a wiring statement. What can: whether the clause predicates
+anything *else*. If it does, the relation verb was not its main predicate.
+
+**The subject head was a two-word window.** `This carefully audited bundled
+runtime component remains operational` needed only one more adjective to fall
+outside it. The head noun is now found by the predicate standing behind it, so
+the number of modifiers in front is irrelevant. The same change made the pronoun
+test survive a fronted adverbial: `At startup it is operational` had been
+reading as prose about nothing.
+
+**Code was a per-clause guess, not a region.** A fenced block introduced as
+`Documentation example only:` had its package read as a second primary subject
+of the report, which cancelled the conflict with the package the report actually
+blamed. Fenced regions are now identified as regions - clause splitting cannot
+see them, since it splits on newlines - and nothing inside one is a subject or a
+claim. Mechanical strings are still taken from inside a fence: a pasted trace
+evidences what the machine printed whoever pasted it, while *who is failing* is
+a question quoted text cannot answer. Two smaller versions of the same error
+went with it: `At startup ...` was matching the stack-frame pattern, which now
+requires an actual frame behind `at`, and a quoted sentence is now its own
+clause rather than a fragment of its introduction.
+
+**And one over-refusal.** `Environment: @x version 0.1.2-alpha.1.` blocked
+everything, because any alphabetic word after a mention counted as a predicate.
+Predicate position is now decided by morphology - the closed auxiliary class,
+or an inflected form - so `version` is not one and `remains`, `passed`, `did`
+are.
+
+**Verification evidence.** All ten reported inputs return no action through the
+installed CLI; so do the seven from the round before and the five before that -
+twenty-two negatives in one run. The five positives, including the environment
+line that had been costing one, still upgrade to `dsh-v0.1.2-alpha.2`. The ten
+are in the public phrasing set, so each also runs through a freshly launched
+`repo-troubleshooter-mcp` stdio process. 438 unit tests pass; evals hold at
+**68/69** with the one long-standing gap; ruff, format and mypy are clean.
+
+**Remaining target.** This is shallow parsing and will still misread sentences a
+parser would get right - a subject and its predicate separated by a relative
+clause of their own, for instance. What has changed is that no rule now depends
+on a distance or a list of words that a report can step outside of by writing
+one more adjective.
 
 **Blockers.** None new. The unsafe-action figures continue to describe the
 committed set only; the hidden acceptance set is not ours to run, and no remote

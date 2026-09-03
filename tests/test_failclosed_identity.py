@@ -162,6 +162,37 @@ PHRASINGS: list[tuple[str, str]] = [
     ),
     # --- an inline span is a quotation, and can carry a claim ---------------
     ("inline-span-health", "Diagnostic summary: `It is operational`"),
+    # --- a health word we know is not weaker than one we do not -------------
+    (
+        "said-package-is-healthy",
+        "@deepseek-ai/dsh-client-modules crashes! Said package is healthy.",
+    ),
+    (
+        "said-package-works-fine",
+        "@deepseek-ai/dsh-client-modules crashes! Said package works fine.",
+    ),
+    # --- a negated verb we cannot read is a claim, not silence --------------
+    ("did-not-malfunction", "@deepseek-ai/dsh-client-modules crashes! It did not malfunction."),
+    ("wasnt-defective", "@deepseek-ai/dsh-client-modules crashes! It wasn't defective."),
+    # --- a relation verb inside a relative clause is not the predicate ------
+    (
+        "reduced-relative-clause",
+        "@deepseek-ai/dsh-client-modules crashes! "
+        "The package using our fallback shim remains operational.",
+    ),
+    (
+        "trailing-relation-verb",
+        "@deepseek-ai/dsh-client-modules crashes! It is operational using plugins.",
+    ),
+    # --- quotation, and things that only look like code ---------------------
+    ("quoted-claim-in-prose", "Diagnostic summary says `It is operational`."),
+    ("fronted-adverbial", "At startup it is operational."),
+    # --- however many modifiers stand in front of the head noun -------------
+    (
+        "many-modifiers",
+        "@deepseek-ai/dsh-client-modules crashes! "
+        "This carefully audited bundled runtime component remains operational.",
+    ),
 ]
 
 CASES = [pytest.param(f"{clause}. {BOOT_SYMPTOM}", id=case_id) for case_id, clause in PHRASINGS]
@@ -412,6 +443,13 @@ class TestRolesAreFailClosed:
         "named-then-operational",
         "no-issues-when-using",
         "passed-after-requiring",
+        "said-package-is-healthy",
+        "said-package-works-fine",
+        "did-not-malfunction",
+        "wasnt-defective",
+        "reduced-relative-clause",
+        "trailing-relation-verb",
+        "many-modifiers",
     }
 
     def test_no_phrasing_leaves_an_actionable_dsh_subject(self):
@@ -563,6 +601,92 @@ class TestElevenPhrasingsThroughBothSurfaces:
         assert feat.extract(report).pointed_unread_assertions
         payload = cli_diagnose(report)
         assert payload["recommended_action"]["type"] not in UNSAFE
+
+    def test_a_known_health_word_is_not_weaker_than_an_unknown_one(self):
+        """`Said package is healthy` retracts the failure it follows.
+
+        Strength was recorded only on claims whose predicate could not be read.
+        A claim we *could* read went down the old path, matched the pronoun
+        list, failed it, and became an unresolved health claim - which the gate
+        drops as harmless. It is not harmless: it takes back the failure the
+        sentence before it reported.
+        """
+        for clause in (
+            "@deepseek-ai/dsh-client-modules crashes! Said package is healthy.",
+            "@deepseek-ai/dsh-client-modules crashes! Said package works fine.",
+        ):
+            features = feat.extract(f"{clause} {BOOT_SYMPTOM}")
+            assert features.subject_conflicted, clause
+            payload = cli_diagnose(f"{clause} {BOOT_SYMPTOM}")
+            assert payload["recommended_action"]["type"] not in UNSAFE, clause
+
+    @pytest.mark.parametrize(
+        "clause",
+        [
+            "@deepseek-ai/dsh-client-modules crashes! It did not malfunction.",
+            "@deepseek-ai/dsh-client-modules crashes! It wasn't defective.",
+        ],
+    )
+    def test_a_negated_unknown_verb_is_a_claim(self, clause):
+        """A predicate we saw and could not classify is not silence.
+
+        `did not malfunction` was classified as UNKNOWN and then dropped
+        without recording anything, which is exactly the reading the unread
+        path exists to prevent.
+        """
+        assert feat.extract(f"{clause} {BOOT_SYMPTOM}").pointed_unread_assertions
+        assert cli_diagnose(f"{clause} {BOOT_SYMPTOM}")["recommended_action"]["type"] not in UNSAFE
+
+    @pytest.mark.parametrize(
+        "clause",
+        [
+            "@deepseek-ai/dsh-client-modules crashes! "
+            "The package using our fallback shim remains operational.",
+            "@deepseek-ai/dsh-client-modules crashes! It is operational using plugins.",
+        ],
+    )
+    def test_a_relation_verb_inside_a_clause_is_not_its_predicate(self, clause):
+        """`the package using our shim remains operational` predicates `remains`.
+
+        Position could not tell a reduced relative clause from a wiring
+        statement; what tells them apart is that the clause predicates
+        something else as well.
+        """
+        assert feat.extract(f"{clause} {BOOT_SYMPTOM}").pointed_unread_assertions
+        assert cli_diagnose(f"{clause} {BOOT_SYMPTOM}")["recommended_action"]["type"] not in UNSAFE
+
+    def test_a_fenced_block_is_not_this_report_s_subject(self):
+        """A documentation example must not become the package we act on.
+
+        The fenced package was read as a second primary subject, which
+        cancelled the conflict with the package the report actually blamed.
+        """
+        report = (
+            "@nebula/theme-engine crashes. Documentation example only:\n"
+            "```text\n@deepseek-ai/dsh-client-modules crashes\n```\n"
+            f"{BOOT_SYMPTOM}"
+        )
+        features = feat.extract(report)
+        assert "@deepseek-ai/dsh-client-modules" not in features.subject_packages
+        assert "@nebula/theme-engine" in features.subject_packages
+        assert cli_diagnose(report)["recommended_action"]["type"] not in UNSAFE
+
+    def test_an_environment_line_does_not_cost_the_positive(self):
+        """`@x version 0.1.2-alpha.1` predicates nothing about @x.
+
+        Treating any alphabetic word after a mention as a predicate turned an
+        ordinary environment line into an unconditional block.
+        """
+        real = (
+            "dsh web starts but __DSH_BOOT__ has zero entries and zero batches; "
+            "client-modules reports HTML did not preload "
+            "@deepseek-ai/dsh-client-modules/client.js, and the host throws "
+            "TypeError: e.indexOf is not a function"
+        )
+        report = "Environment: @deepseek-ai/dsh-client-modules version 0.1.2-alpha.1. " + real
+        payload = cli_diagnose(report)
+        assert payload["incident"]["matched"] is True
+        assert payload["recommended_action"]["target"] == "dsh-v0.1.2-alpha.2"
 
     def test_a_pointed_unread_claim_blocks_even_a_shared_primary(self):
         """The invariant the previous round's commit message claimed but did not hold."""

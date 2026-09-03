@@ -11,6 +11,7 @@ what is new.
 
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -223,6 +224,12 @@ def _record_extractor_version(
     recorded["extractor_version"] = FEATURE_EXTRACTOR_VERSION
     if stats is not None:
         recorded.update(stats.to_json())
+        # An invalidation marks this source stale and zeroes its counts, so
+        # a finished build has to clear that mark. Otherwise the reading only
+        # flips from one false state to the other: rows present, status stale.
+        state.status = "complete"
+        state.objects_seen = stats.rows_stored_total
+        state.last_success_at = dt.datetime.now(dt.UTC)
     state.stats = recorded
     session.flush()
 

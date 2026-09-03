@@ -44,7 +44,7 @@ from enum import StrEnum
 # Bumped whenever subject or behaviour extraction changes in a way that makes
 # already-mined signatures wrong. The value is stored alongside the mined rows;
 # a database holding an older version must be rebuilt before it may be used.
-FEATURE_EXTRACTOR_VERSION = 13
+FEATURE_EXTRACTOR_VERSION = 14
 
 # Directories every package has; a path tail led by one of these names nothing.
 GENERIC_PATH_DIRS = frozenset(
@@ -938,9 +938,15 @@ def _package_aliases(name: str) -> list[str]:
 # dependency.
 
 CLAUSE_SPLIT_RE = re.compile(
-    r"(?:[.!?](?=\s|$)|[\n;:]|,\s+|\s+(?:and|but|then|yet|however|while|so)\s+)",
+    # The backtick is a boundary: `Diagnostic summary says `It is operational`.`
+    # is two clauses, and reading it as one buried the claim inside a subject.
+    r"(?:[.!?](?=\s|$)|[\n;:`]|,\s+|\s+(?:and|but|then|yet|however|while|so)\s+)",
     re.IGNORECASE,
 )
+
+# The pronouns of ANAPHOR_RE on their own, for when the subject head has to be
+# found by the predicate behind it rather than by the start of the clause.
+ANAPHOR_WORD_RE = re.compile(r"(?:it|they|these|those|them|itself|themselves)", re.IGNORECASE)
 
 # Subjects that point back at something already named.
 ANAPHOR_RE = re.compile(
@@ -957,9 +963,7 @@ ANAPHOR_RE = re.compile(
 # added here - extending the list was declined, and would not have fixed the
 # shape of the defect.
 PACKAGE_NOUN_RE = re.compile(
-    r"^(?:\W*\w+\W+){0,2}?\W*(?<![\w-])"
-    r"(?:packages?|modules?|librar(?:y|ies)|dependenc(?:y|ies)|plugins?|components?)"
-    r"(?![\w-])",  # a hyphenated modifier is not a head noun: `plugin-registered commands`
+    r"packages?|modules?|librar(?:y|ies)|dependenc(?:y|ies)|plugins?|components?",
     re.IGNORECASE,
 )
 
@@ -999,7 +1003,10 @@ ENTITY_IN_SUBJECT_RE = re.compile(r"@[\w.-]+/[\w.-]+|node:[\w/]+|[\w.-]+/[\w.-]+
 CODE_BLOCK_RE = re.compile(r"```|~~~")
 INLINE_SPAN_RE = re.compile(r"`([^`\n]+)`")
 STACK_FRAME_RE = re.compile(
-    r"^\s*(?:at\s+\S+|File\s+\"[^\"]+\",\s*line\s+\d+|[\w./-]+\.(?:ts|js|py|go|rs):\d+)",
+    # `at` needs a frame behind it - a qualified name, a path, a call - or
+    # `At startup it is operational` reads as a stack trace and its claim is
+    # thrown away.
+    r"^\s*(?:at\s+\S*[.:/(]\S*|File\s+\"[^\"]+\",\s*line\s+\d+|[\w./-]+\.(?:ts|js|py|go|rs):\d+)",
     re.IGNORECASE | re.MULTILINE,
 )
 CODE_PUNCTUATION_RE = re.compile(r"[{}=<>|&;]|=>|::|\bfunction\b|\breturn\b|\bconst\b")
@@ -1053,14 +1060,41 @@ SUBORDINATOR_RE = re.compile(
     re.IGNORECASE,
 )
 
-# A main predicate follows its subject closely. Four words covers `Our
-# application imports @x` and `@x is one of our dependencies` without reaching
-# a verb buried at the end of a sentence.
-MAIN_PREDICATE_WORD_LIMIT = 4
+# A word that could be a predicate at all: letters, then whatever punctuation
+# ends the clause. Never another path, scope or file name.
+PREDICATE_SHAPE_RE = re.compile(r"^[A-Za-z]+[^\w/@]*$")
 
-# The word standing where a predicate stands: letters, then whatever
-# punctuation ends the clause. Never another path, scope or file name.
-PREDICATE_WORD_RE = re.compile(r"^[A-Za-z]+[^\w/@]*$")
+
+def _verb_shaped(word: str) -> bool:
+    """Does this word stand where a predicate stands?
+
+    Morphology and the closed auxiliary class decide, so no list of verbs has
+    to be kept. `is`, `did`, `remains`, `passed`, `crashes` do; `version`,
+    `startup` and `plugins/react` do not.
+    """
+    if PREDICATE_SHAPE_RE.match(word) is None:
+        return False
+    bare = word.rstrip(".,;:!?)]\"'")
+    return bool(AUXILIARY_RE.match(bare) or INFLECTED_RE.match(bare))
+
+
+# The closed class of English auxiliaries, plus inflection. Together these say
+# whether a word stands where a predicate stands - `is`, `did`, `remains`,
+# `passed`, `crashes` - without listing predicates. `version`, in
+# `@x version 0.1.2-alpha.1`, does not, and reading it as one made an ordinary
+# environment line block every action.
+AUXILIARY_RE = re.compile(
+    r"^(?:is|was|are|were|be|been|being|am|has|have|had|do|does|did"
+    r"|can|could|will|would|shall|should|may|might|must)$",
+    re.IGNORECASE,
+)
+INFLECTED_RE = re.compile(r"^[a-z]+(?:s|ed|ing)$", re.IGNORECASE)
+
+# A copula anywhere in a span, as a whole word. COPULA_RE is anchored where it
+# is used and would find `is` inside `this`.
+COPULA_WORD_RE = re.compile(
+    r"\b(?:is|was|are|were|be|been|being|am|looks?|seems?|remains?)\b", re.I
+)
 
 # Words, as opposed to the punctuation a clause ends on.
 WORD_RE = re.compile(r"\w+")
@@ -1096,7 +1130,7 @@ def _predicate_follows(clause: str, at: int) -> bool:
     anything. `@x is operational` has `is`. Without this a title that merely
     lists packages counted as a claim about the first one.
     """
-    return any(PREDICATE_WORD_RE.match(word) for word in clause[at:].split())
+    return any(_verb_shaped(word) for word in clause[at:].split())
 
 
 def _subject_is_a_package_token(clause: str) -> bool:
@@ -1112,22 +1146,46 @@ def _subject_is_a_package_token(clause: str) -> bool:
     if match is None:
         return False
     rest = text[match.end() :].split()
-    return bool(rest) and PREDICATE_WORD_RE.match(rest[0]) is not None
+    return bool(rest) and _verb_shaped(rest[0])
+
+
+def _subject_refers_back(clause: str) -> bool:
+    """Does this clause's subject refer back to a package?
+
+    Either as a pronoun or as a package-kind noun, and in both cases found by
+    the predicate standing behind it rather than by the start of the clause.
+    `At startup it is operational` puts a fronted adverbial in front of the
+    pronoun; anchoring the test at position zero read that as prose about
+    nothing and let the claim go.
+    """
+    words = clause.split()
+    for index, word in enumerate(words[:-1]):
+        if not _verb_shaped(words[index + 1]):
+            continue
+        head = word.strip(".,;:!?()[]\"'")
+        if ANAPHOR_WORD_RE.fullmatch(head) or PACKAGE_NOUN_RE.fullmatch(head):
+            return True
+    return False
 
 
 def _subject_names_a_package_kind(clause: str) -> bool:
-    """Does this clause's *subject* refer to a package by its head noun?
+    """Does this clause's subject refer to a package by its head noun?
 
-    `Said package is operational` does: the noun phrase opens the clause and a
-    predicate follows it. `while resolving a module` does not - there the noun
-    is the object of a verb and nothing follows it, and reading it as a subject
-    made the flagship incident abstain.
+    A package-kind noun with a predicate directly behind it is a subject:
+    `said package is`, `the same package passed`, `this carefully audited
+    bundled runtime component remains`. How many modifiers stand in front of it
+    does not matter - counting them was a window, and a report only had to
+    write one more adjective to fall outside it. `while resolving a module` has
+    no predicate behind the noun, and `plugin-registered commands` never had a
+    package noun at all.
     """
-    text = clause.strip()
-    match = PACKAGE_NOUN_RE.match(text)
-    if match is None:
-        return False
-    return bool(WORD_RE.findall(text[match.end() :]))
+    words = clause.split()
+    for index, word in enumerate(words[:-1]):
+        if PACKAGE_NOUN_RE.fullmatch(word.strip(".,;:!?()[]\"'")) and _verb_shaped(
+            words[index + 1]
+        ):
+            return True
+    return False
 
 
 def _is_relation_statement(clause: str) -> bool:
@@ -1144,7 +1202,13 @@ def _is_relation_statement(clause: str) -> bool:
     match = RELATION_STATEMENT_RE.search(head)
     if match is None:
         return False
-    return len(head[: match.start()].split()) <= MAIN_PREDICATE_WORD_LIMIT
+    # If the clause predicates something else as well, the relation verb was
+    # not its main predicate: `the package using our fallback shim remains
+    # operational` is a state claim with a reduced relative clause inside it,
+    # and `it is operational using plugins` is a state claim with a trailing
+    # one. Counting words from the start could not tell either of those from
+    # `the project requires @x`.
+    return not COPULA_WORD_RE.search(head[: match.start()] + " " + head[match.end() :])
 
 
 BINDING_EXPLICIT = "explicit"
@@ -1201,6 +1265,34 @@ class StateAssertion:
         }
 
 
+FENCE_RE = re.compile(r"^[ \t]*(?:```|~~~).*$", re.MULTILINE)
+
+
+def quoted_spans(text: str) -> list[tuple[int, int]]:
+    """The regions a report has fenced off as quotation.
+
+    A fenced block is material the reporter is showing, not asserting: a
+    documentation example, someone else's output, a snippet from a manual.
+    Nothing inside one says who is failing or what condition anything is in.
+    Reading fenced text as the reporter's own claim let a block introduced as
+    `Documentation example only:` make its package a primary subject, which
+    cancelled the conflict with the package the report actually blamed.
+
+    Mechanical strings - paths, symbols, error text - are still taken from
+    inside a fence. Those are not claims about authorship; a pasted trace
+    evidences what the machine printed whoever pasted it.
+    """
+    marks = list(FENCE_RE.finditer(text))
+    spans = [(marks[i].end(), marks[i + 1].start()) for i in range(0, len(marks) - 1, 2)]
+    if len(marks) % 2:
+        spans.append((marks[-1].end(), len(text)))
+    return spans
+
+
+def _inside(position: int, spans: Sequence[tuple[int, int]]) -> bool:
+    return any(start <= position < end for start, end in spans)
+
+
 def _clauses(text: str) -> list[tuple[int, str]]:
     """(offset, clause) pairs. Sentence ends and coordinators both split."""
     clauses: list[tuple[int, str]] = []
@@ -1241,7 +1333,9 @@ def _state_in_clause(clause: str) -> tuple[PackageState, str, int, bool] | None:
 
 
 def extract_state_assertions(
-    text: str, mention_spans: list[tuple[int, int, str]]
+    text: str,
+    mention_spans: list[tuple[int, int, str]],
+    quoted: Sequence[tuple[int, int]] = (),
 ) -> list[StateAssertion]:
     """Bind every condition claim to a package, to another subject, or to nothing.
 
@@ -1253,6 +1347,9 @@ def extract_state_assertions(
     last_subject_package: str | None = None
 
     for offset, clause in _clauses(text):
+        if _inside(offset, quoted):
+            # Quoted material. It asserts nothing, in either direction.
+            continue
         clause_end = offset + len(clause)
         inside = [m for m in mention_spans if offset <= m[0] < clause_end]
 
@@ -1260,6 +1357,13 @@ def extract_state_assertions(
         # how `It is healthy (verified)` lost its health statement to a pair of
         # brackets.
         found = _state_in_clause(clause)
+        if found is not None and found[0] is PackageState.UNKNOWN:
+            # We saw a predicate and could not say what it asserts: `it did not
+            # malfunction`, `it wasn't defective`. Dropping it here read as
+            # silence, which is the whole defect the unread-claim path exists
+            # to prevent - so it goes down that path like any other clause we
+            # could not read.
+            found = None
 
         if found is None:
             # No readable predicate. If this clause is prose *about* a package -
@@ -1286,7 +1390,7 @@ def extract_state_assertions(
                     source = SOURCE_EXPLICIT_PACKAGE
                 elif _subject_is_a_package_token(clause):
                     source = SOURCE_EXPLICIT_PACKAGE
-                elif ANAPHOR_RE.match(subject) or _subject_names_a_package_kind(clause):
+                elif ANAPHOR_RE.match(subject) or _subject_refers_back(clause):
                     source = SOURCE_RESOLVED_ANAPHOR
                 else:
                     source = SOURCE_PROXIMITY_GUESS
@@ -1314,9 +1418,6 @@ def extract_state_assertions(
                     )
             continue
         state, cue, predicate_at, adjectival = found
-        if state is PackageState.UNKNOWN:
-            # Not a claim about anything: nothing was asserted.
-            continue
         subject_text = _strip_wrapper(clause[:predicate_at])
 
         # A bare positive word with a package standing right after it is a
@@ -1365,30 +1466,54 @@ def extract_state_assertions(
                 )
             continue
 
-        if not ANAPHOR_RE.match(subject_text):
-            # A noun phrase naming nothing we can see: `the server`, `said
-            # package`, `the affected library`. We will not attribute it to the
-            # nearest package - that would blame something the report never
-            # blamed - and we will not wave it through as somebody else's
-            # problem either. It dangles, and the gate decides what that costs.
+        # A subject that refers back to a package - a pronoun, or a noun phrase
+        # whose head noun names a package-kind. The same test the unread path
+        # uses: reading a claim we understand should not attach it more weakly
+        # than one we do not, and checking only the pronoun list here let
+        # `Said package is healthy` retract a failure and disappear.
+        refers_back = bool(ANAPHOR_RE.match(subject_text)) or _subject_refers_back(clause)
+        if not refers_back:
+            # A noun phrase naming nothing we can see: `the server`, `the host
+            # process`. We will not attribute it to the nearest package - that
+            # would blame something the report never blamed - and we will not
+            # wave it through as somebody else's problem either. It dangles,
+            # and the gate decides what that costs.
             assertions.append(
                 StateAssertion(state, BINDING_UNRESOLVED, None, subject_text, cue, offset)
             )
             last_subject_package = None
             continue
 
-        # A pronoun. Bind it only when exactly one antecedent exists.
+        # Bind it only when exactly one antecedent exists.
         antecedents = {m[2] for m in mention_spans if m[0] < offset}
         if len(antecedents) == 1:
             package = next(iter(antecedents))
             last_subject_package = package
             assertions.append(
-                StateAssertion(state, BINDING_ANAPHORIC, package, subject_text, cue, offset)
+                StateAssertion(
+                    state,
+                    BINDING_ANAPHORIC,
+                    package,
+                    subject_text,
+                    cue,
+                    offset,
+                    SOURCE_RESOLVED_ANAPHOR,
+                )
             )
         else:
-            # Zero antecedents, or several: refuse to guess.
+            # Zero antecedents, or several: refuse to guess. The claim still
+            # points at *a* package, and the source says so, so the gate can
+            # refuse rather than treat it as somebody else's business.
             assertions.append(
-                StateAssertion(state, BINDING_UNRESOLVED, None, subject_text, cue, offset)
+                StateAssertion(
+                    state,
+                    BINDING_UNRESOLVED,
+                    None,
+                    subject_text,
+                    cue,
+                    offset,
+                    SOURCE_RESOLVED_ANAPHOR,
+                )
             )
         continue
 
@@ -1500,9 +1625,17 @@ def classify(text: str, known_modules: frozenset[str] = frozenset()) -> Subjects
             subjects.modules.add(token)
     subjects.modules -= subjects.all_packages
 
+    # A package named inside a fenced block is being shown, not reported. It
+    # keeps contributing paths and symbols above; what it does not do is become
+    # a subject of this report or carry a condition.
+    quoted = quoted_spans(lowered)
+    subjects.package_mentions = [
+        m for m in subjects.package_mentions if not _inside(m.start, quoted)
+    ]
+
     # Claims made anywhere in the report, bound to whatever they are about.
     named_spans = [(m.start, m.end, m.canonical) for m in subjects.package_mentions]
-    subjects.state_assertions = extract_state_assertions(lowered, named_spans)
+    subjects.state_assertions = extract_state_assertions(lowered, named_spans, quoted)
     subjects.package_mentions = apply_assertions(
         subjects.package_mentions, subjects.state_assertions
     )

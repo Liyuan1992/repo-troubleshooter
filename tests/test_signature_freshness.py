@@ -133,6 +133,53 @@ class TestStaleIsRefused:
         assert "--rebuild" in payload["error"]["remediation"]
 
 
+class TestInvalidationBookkeeping:
+    """`rt status` must not report a finished build over deleted rows."""
+
+    def test_every_build_stat_is_cleared_by_an_invalidation(self):
+        """Whatever a build records, the invalidation has to remove.
+
+        The first two invalidation migrations deleted the rows and cleared the
+        extractor version but left the row counts and `status: complete`, so
+        `rt status` read `complete / 15689` over an empty table. A stat added
+        later and not listed here would bring that back.
+        """
+        from repo_troubleshooter.relations.signatures import SignatureStats
+        from repo_troubleshooter.store.signature_invalidation import BUILD_STATS
+
+        recorded = set(SignatureStats().to_json()) | {"extractor_version"}
+        assert recorded <= set(BUILD_STATS), sorted(recorded - set(BUILD_STATS))
+
+    def test_a_finished_rebuild_clears_the_stale_mark(self, session, synced_repo):
+        """And the reading must not stick at the other false state either.
+
+        An invalidation marks the source stale with zero objects; a build that
+        finishes has to say so, or the database ends up holding rows while
+        `rt status` still reports `stale / 0`.
+        """
+        from repo_troubleshooter.relations.signatures import build_for_repository
+
+        state = session.scalar(
+            select(SyncState).where(
+                SyncState.repo_id == synced_repo.id, SyncState.source == "signatures"
+            )
+        )
+        assert state is not None
+        before_status, before_seen = state.status, state.objects_seen
+        state.status = "stale"
+        state.objects_seen = 0
+        session.flush()
+        try:
+            stats = build_for_repository(session, synced_repo, limit=1)
+            session.refresh(state)
+            assert state.status == "complete"
+            assert state.objects_seen == stats.rows_stored_total
+        finally:
+            state.status = before_status
+            state.objects_seen = before_seen
+            session.flush()
+
+
 class TestMissingIsRefused:
     def test_a_repository_with_no_signatures_cannot_be_diagnosed(self, session, synced_repo):
         """An empty corpus is refused for the same reason a stale one is."""
