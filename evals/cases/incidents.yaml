@@ -165,19 +165,6 @@ cases:
   kind: incident
   subsystem: preset / agent-presets
   verified_upstream: false
-  known_gap: true
-  gap_reason: >
-    A measured cost of the conservative authorization rule, kept visible rather
-    than passed by loosening the gate. This report's log line - `Host Cordis
-    inspect provider "Service" is already registered` - is a claim the system
-    cannot read, and it attributes to `@deepseek-ai/dsh-tool-cordis` because
-    that is the only package named before it. Under the rule that an unread
-    claim about a named package blocks action on paths and symbols, the match is
-    refused. Recovering it needs a calibrated semantic channel for claims, not a
-    longer predicate vocabulary; widening the gate would reopen the whole class
-    of synonym bypasses it exists to close.
-  upstream:
-    discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/4542
   query:
     error: 'Two preset-mounting bugs in 0.1.1-rc.2 (symlinked preset dirs skipped in discovery; duplicate
       inspect provider registration) — with patches

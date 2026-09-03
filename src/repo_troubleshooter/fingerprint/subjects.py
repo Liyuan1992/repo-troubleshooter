@@ -44,7 +44,7 @@ from enum import StrEnum
 # Bumped whenever subject or behaviour extraction changes in a way that makes
 # already-mined signatures wrong. The value is stored alongside the mined rows;
 # a database holding an older version must be rebuilt before it may be used.
-FEATURE_EXTRACTOR_VERSION = 11
+FEATURE_EXTRACTOR_VERSION = 12
 
 # Directories every package has; a path tail led by one of these names nothing.
 GENERIC_PATH_DIRS = frozenset(
@@ -549,6 +549,19 @@ class Subjects:
         risk, not silence: it is exactly how an unfamiliar verb used to slip
         through as a harmless dependency.
         """
+        return [
+            a
+            for a in self.state_assertions
+            if a.binding in (BINDING_UNINTERPRETED, BINDING_UNINTERPRETED_WEAK)
+        ]
+
+    @property
+    def pointed_unread_assertions(self) -> list[StateAssertion]:
+        """Unread claims whose subject points at a package: `It is operational`.
+
+        These block that package unconditionally. A shared primary earlier in the
+        report does not settle what a later sentence was trying to say about it.
+        """
         return [a for a in self.state_assertions if a.binding == BINDING_UNINTERPRETED]
 
     @property
@@ -958,9 +971,24 @@ SUBJECT_WRAPPER_RE = re.compile(r"^[\s\"'`(\[<>*_~#-]+|[\s\"'`)\]>*_~]+$")
 # phrase we cannot resolve - is unresolved, not somebody else's problem.
 ENTITY_IN_SUBJECT_RE = re.compile(r"@[\w.-]+/[\w.-]+|node:[\w/]+|[\w.-]+/[\w.-]+|\.\w{2,4}\b")
 
-# Code, not prose: a clause carrying these is a snippet or a log line, and its
-# unreadable predicates are not claims about a package.
-CODE_MARKER_RE = re.compile(r"[{}()\[\]=<>|&]|=>|::|\bfunction\b|\breturn\b")
+# Real code, recognised by structure rather than by a single bracket: fenced
+# blocks, inline spans, stack frames, and lines whose punctuation density leaves
+# no room for prose. A parenthesis is not evidence of code - `(runtime
+# dependency)` and `[checked]` are ordinary things to write in a bug report, and
+# treating them as code once deleted an explicit health statement.
+CODE_FENCE_RE = re.compile(r"```|~~~|`[^`\n]+`")
+STACK_FRAME_RE = re.compile(
+    r"^\s*(?:at\s+\S+|File\s+\"[^\"]+\",\s*line\s+\d+|[\w./-]+\.(?:ts|js|py|go|rs):\d+)",
+    re.IGNORECASE | re.MULTILINE,
+)
+CODE_PUNCTUATION_RE = re.compile(r"[{}=<>|&;]|=>|::|\bfunction\b|\breturn\b|\bconst\b")
+
+# A statement about how packages are wired together, not about their condition.
+RELATION_STATEMENT_RE = re.compile(
+    r"\b(?:imports?|importing|requires?|requiring|depends?\s+on|uses?|using|installs?"
+    r"|installing|bundles?|is\s+(?:a|one\s+of\s+our)\s+dependenc(?:y|ies))\b",
+    re.IGNORECASE,
+)
 
 
 def _strip_wrapper(text: str) -> str:
@@ -996,17 +1024,39 @@ def _subject_prefix(clause: str) -> str:
     return " ".join(words[:4])
 
 
-def _clause_is_prose(clause: str) -> bool:
-    """Only prose makes claims we should try to read."""
-    return not CODE_MARKER_RE.search(clause)
+def _clause_is_code(clause: str) -> bool:
+    """Is this clause code or log output rather than someone writing a sentence?
+
+    Structure decides, not a single character. Brackets appear constantly in
+    ordinary reports - `(runtime dependency)`, `[checked]` - and skipping a
+    clause because it contains one deleted explicit health statements.
+    """
+    if CODE_FENCE_RE.search(clause) or STACK_FRAME_RE.search(clause):
+        return True
+    words = [w for w in clause.split() if w]
+    if not words:
+        return True
+    punctuation = len(CODE_PUNCTUATION_RE.findall(clause))
+    return punctuation >= 2 and punctuation / len(words) > 0.3
+
+
+def _is_relation_statement(clause: str) -> bool:
+    """`The project requires @x` describes wiring, not condition."""
+    return bool(RELATION_STATEMENT_RE.search(clause))
 
 
 BINDING_EXPLICIT = "explicit"
 BINDING_ANAPHORIC = "anaphoric"
 BINDING_OTHER = "other_subject"
 BINDING_UNRESOLVED = "unresolved"
-#: A claim we could see but could not read. Treated as risk, never silence.
+#: A claim we could see but could not read, whose subject *points at* a
+#: package: "It is operational". The report is saying something about that
+#: package in words we do not understand, so nothing about it is actionable.
 BINDING_UNINTERPRETED = "uninterpreted"
+#: The same, but the subject is ordinary prose that merely follows a mention:
+#: "dsh web starts". Weak - it may not be about the package at all - so it
+#: only counts where nothing else establishes identity.
+BINDING_UNINTERPRETED_WEAK = "uninterpreted_weak"
 
 
 @dataclass(frozen=True)
@@ -1085,15 +1135,11 @@ def extract_state_assertions(
         clause_end = offset + len(clause)
         inside = [m for m in mention_spans if offset <= m[0] < clause_end]
 
-        if not _clause_is_prose(clause):
-            # A log line or a code fragment. Its words are output, not a claim
-            # someone is making about a package, and reading them as claims turns
-            # every pasted stack trace into a dangling assertion.
-            if inside:
-                last_subject_package = inside[-1][2]
-            continue
-
+        # Read the claim first. Deciding "this looks like code" before parsing is
+        # how `It is healthy (verified)` lost its health statement to a pair of
+        # brackets.
         found = _state_in_clause(clause)
+
         if found is None:
             # No readable predicate. If this clause is prose *about* a package -
             # named here, or referred to by a subject we would have resolved -
@@ -1102,7 +1148,11 @@ def extract_state_assertions(
             # unusable") from reading as silence.
             if inside:
                 last_subject_package = inside[-1][2]
-            if _clause_is_prose(clause) and _looks_like_a_claim(clause):
+            if (
+                not _clause_is_code(clause)
+                and not _is_relation_statement(clause)
+                and _looks_like_a_claim(clause)
+            ):
                 subject = _strip_wrapper(_subject_prefix(clause))
                 target = None
                 if inside:
@@ -1111,10 +1161,17 @@ def extract_state_assertions(
                     antecedents = {m[2] for m in mention_spans if m[0] < offset}
                     target = next(iter(antecedents)) if len(antecedents) == 1 else None
                 if target is not None or subject:
+                    # `It ...` points at the package; `dsh web starts ...` is just
+                    # a sentence that happens to follow one.
+                    binding = (
+                        BINDING_UNINTERPRETED
+                        if ANAPHOR_RE.match(subject)
+                        else BINDING_UNINTERPRETED_WEAK
+                    )
                     assertions.append(
                         StateAssertion(
                             PackageState.UNKNOWN,
-                            BINDING_UNINTERPRETED,
+                            binding,
                             target,
                             subject,
                             clause.strip()[:60],

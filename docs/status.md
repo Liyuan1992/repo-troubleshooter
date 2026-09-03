@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-09-01 (mainline iteration on baseline `bf29314`). Fields stay
+Updated: 2026-09-03 (mainline iteration on baseline `bf29314`). Fields stay
 separated: **current fact**, **verification evidence**, **remaining target**,
 **blockers**. Nothing counts as verified because a test exists; each row names the
 observation behind it.
@@ -299,10 +299,13 @@ for false matches.
 History of this denominator, so the number is not read as growth in quality:
 **54/55** before the regression cases, **64/65** after the first 10, **68/69**
 since three adversarial cases and one modifier-invariance case were added. The
-subject-role rework changed no case outcome: still 68/69, same gap.
+subject-role rework changed no case outcome: still 68/69, same gap. The
+conservative claim rule briefly cost a second case, `preset-mounting-discovery`,
+which was registered as a known gap and has since been recovered by fixing the
+code test that was misreading it (section 17) - not by loosening the gate.
 
 **Correct Action@1 exclusion rule:** the documented gap is excluded from the
-denominator (n=29, not 30). It is not counted as a pass and not counted as a
+denominator (n=30, not 31). It is not counted as a pass and not counted as a
 failure - it is reported separately as `documented_recall_gaps`. Nothing else is
 excluded.
 
@@ -319,7 +322,7 @@ excluded.
 | **abstention precision** | **0.75** | 51 |
 | documented recall gaps | 1 | - |
 | future-leakage violations | 0 | - |
-| latency p50 / p95 / max | 57 ms / 793 ms / 870 ms | 69 |
+| latency p50 / p95 / max | 55 ms / 766 ms / 814 ms | 69 |
 
 **Verification evidence.** `python evals/runner.py` writes
 `evals/reports/latest.json`; the hard gates are re-asserted in
@@ -374,9 +377,10 @@ payloads beyond the current coverage note.
 ## 6. Data
 
 **Current fact.** 550 discussions, 1510 comments, 123 doc files, 7 releases,
-275 package manifests, **15,663 stored symptom signatures** (measured after the
-rebuild at extractor version 8; earlier rounds reported inflated figures - see
-the row-accounting note below). Discussion coverage is still partial and reports `degraded`.
+275 package manifests, **15,689 stored symptom signatures** (a SQL count taken
+after the rebuild at extractor version 12, and equal to the `rows_stored_total`
+the rebuild recorded; earlier rounds reported inflated figures - see the
+row-accounting note below). Discussion coverage is still partial and reports `degraded`.
 A paced backfill (`rt sync … --backfill-pages N`) walks older history a few pages
 at a time, persists its GraphQL cursor, resumes where it stopped, and never claims
 `complete` while pages remain.
@@ -429,15 +433,21 @@ candidate features and live query features have to come from the same extractor
 or every comparison between them is meaningless, and a confident wrong answer is
 worse than a refusal.
 
-The migration that introduced typed subjects deletes every mined row and clears
-the recorded version, so an upgraded database is *forced* through a rebuild
-rather than silently diagnosing against stale features.
+Every change to how claims are read bumps that version and ships a migration
+that deletes the mined rows and clears the recorded version, so an upgraded
+database is *forced* through a rebuild rather than silently diagnosing against
+stale features. The current version is **12**; the migration
+`8f2c496d97c2_claim_reading_rules_invalidate_` invalidated version 11 when
+structural code detection and relation statements changed what a clause asserts.
 
 **Verification evidence.** After `db init` on the existing database, `diagnose`
 refused with `no symptom signatures are stored ... build them with:
 repo-troubleshooter signatures <repo>` and exited non-zero; after
-`rt signatures <repo> --rebuild` (500 objects, 32,882 rows, extractor_version 3)
-it answered again. `tests/test_signature_freshness.py` rewinds the stored version
+`rt signatures <repo> --rebuild` it answered again. The version 12 upgrade was
+walked the same way on the live database: `alembic upgrade head`, then
+`diagnose` exiting 1 with the stale-signature refusal, then a rebuild
+(31,313 attempted / 15,689 inserted, `extractor_version: 12` recorded), then the
+same query answering. `tests/test_signature_freshness.py` rewinds the stored version
 and asserts the refusal on all three paths - engine (raises), CLI (non-zero exit,
 no traceback, `--rebuild` in the message) and MCP (`signatures_stale` structured
 error) - then restores it.
@@ -458,16 +468,24 @@ what the database holds, so the counts are now separate:
 
 | count | meaning | last rebuild |
 |---|---|---|
-| `rows_attempted` | (kind, value) pairs offered to the database | 31,314 |
+| `rows_attempted` | (kind, value) pairs offered to the database | 31,313 |
 | `rows_inserted` | of those, actually new | 15,689 |
 | `rows_stored_total` | rows the repository holds afterwards | **15,689** |
 
 Earlier rounds reported the attempted figure (32,882, and 19,185 before that) as
 if it were storage. It was not.
 
-By kind, after the cue-scope rebuild: subject_package **33**;
-subject_dependency 173; subject_mentioned 821; cause 70; the remaining kinds are
-unchanged.
+These three come from `sync_state.stats` for source `signatures`, and a direct
+`SELECT count(*)` on `symptom_signature` returns the same 15,689. An earlier
+draft of this document quoted 31,314 / 15,689 while the database held
+31,316 / 15,691 - numbers from a *different* rebuild than the one being
+described. The figures here are re-read from the database after the extractor
+version 12 rebuild rather than carried forward.
+
+By kind, after that rebuild: structural 5,142; behavior 4,666; component 2,073;
+subject_module 1,473; subject_unresolved 749; error 575; subject_path 557;
+subject_package **165**; subject_builtin 94; subject_dependency 72; cause 70;
+subject_confirmed_non_primary 44; subject_conflicted 9.
 That last number is the point of the rework: a package counts as the subject
 only where a report actually blames it, so package identity is rare and precise
 rather than granted by token shape. It rose from 18 to 36 when negated expected
@@ -722,9 +740,9 @@ Plus the conservative rule the review asked for: a package the report names but
 whose condition is never established, and which the candidate never mentions,
 cannot be reached by path, module or symbol alone.
 
-Claims are only read from **prose**. A clause carrying code punctuation is
-output, not an assertion - otherwise every pasted stack trace becomes a dangling
-claim.
+Claims are only read from **prose**. Code or log output is not an assertion -
+otherwise every pasted stack trace becomes a dangling claim. What counts as code
+is decided structurally (section 17), not by the presence of one bracket.
 
 **Verification evidence.** All 21 reported inputs (20 negatives plus the
 disclosed `the theme engine crashes` boundary) return no unsafe action through
@@ -744,14 +762,66 @@ incidents now abstain rather than match:
 | case | why |
 |---|---|
 | `para-boot-graph-user-voice` | the long-standing paraphrase gap |
-| `preset-mounting-discovery` | its log line is a claim the system cannot read, attributed to the only package named before it |
+| `preset-mounting-discovery` | its log line was read as an unreadable claim, attributed to the only package named before it |
 
-Both are registered as known gaps, excluded from Correct Action@1 (n=29) rather
-than deleted or passed by loosening the gate. Recovering them needs a calibrated
-semantic channel - option 2 in the review - not a longer vocabulary.
+Both were registered as known gaps, excluded from Correct Action@1 rather than
+deleted or passed by loosening the gate. `preset-mounting-discovery` has since
+been recovered - not by loosening the claim gate but by fixing what counts as
+code (section 17), which is what was misreading its log line. The paraphrase gap
+remains, and recovering it needs a calibrated semantic channel - option 2 in the
+review - not a longer vocabulary.
 
 **Blockers.** None new. The unsafe-action figures continue to describe the
 committed set only.
+
+## 17. Two ways around the claim gate
+
+**Current fact.** Review found that an unread claim did not always block the
+package it was about. Two independent bypasses:
+
+**A shared primary package licensed ignoring the claim.** The rule read
+`if targeted and not has_package_identity:` - an unread claim only blocked when
+nothing *else* had established identity. So `@dsh crashes! It is operational.`
+sailed through: the first sentence agreed with the candidate, that agreement
+counted as identity, and the second sentence - a contradiction in words the
+system cannot read - was discarded. Agreement with a candidate is not permission
+to stop reading. Claims whose subject **points at** a package (`It ...`,
+`Said package ...`) now block that package unconditionally, whatever else the
+report got right. Claims whose subject is ordinary prose merely following a
+mention (`dsh web starts ...`) are weaker - they may not be about the package at
+all - and still only count where nothing else establishes identity.
+
+**A bracket counted as code.** The prose test was
+`CODE_MARKER_RE = [{}()\[\]=<>|&]...`: any clause containing a parenthesis or a
+square bracket was output, not a claim. `It is healthy (verified)` and
+`It is fine [checked]` therefore lost their health statements entirely and the
+package stayed actionable. Code is now recognised by structure - fenced blocks,
+inline spans, stack frames, or punctuation density above 30% of the words with
+at least two markers - and brackets alone prove nothing. The clause is parsed
+*first*; only an unparseable clause is then tested for code.
+
+**A relation statement is not a state claim.** `The project imports @dsh`
+describes wiring, not condition. It was being filed as an unreadable claim, and
+that cost three positives and the `preset-mounting-discovery` incident.
+
+**Verification evidence.** Through the installed CLI: `@dsh crashes! It is
+operational.`, `... fails! It has no issues.` and `... hangs! It passed every
+health check.` now return no action, where all three previously upgraded; the
+parenthesised and bracketed health statements abstain; the bare boot-graph
+positive and three relation-prefixed variants of it all still upgrade to
+`dsh-v0.1.2-alpha.2`. The public phrasing set in
+`tests/test_failclosed_identity.py` carries all of them and runs each through
+the installed CLI and a freshly launched `repo-troubleshooter-mcp` stdio
+process. Evals returned to **68/69** with one gap.
+
+**Remaining target.** The punctuation-density threshold is a heuristic and will
+misjudge some short lines. A claim that is code *and* prose (a sentence ending in
+an inline snippet) is still read as prose.
+
+**Blockers.** None new. The unsafe-action figures continue to describe the
+committed set only; the hidden acceptance set is not ours to run.
+
+---
 
 ## Not built
 

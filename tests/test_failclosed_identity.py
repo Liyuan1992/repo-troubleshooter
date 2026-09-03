@@ -121,6 +121,23 @@ PHRASINGS: list[tuple[str, str]] = [
         "this-package-does-not-crash",
         "We depend on @deepseek-ai/dsh-client-modules. this package does not crash",
     ),
+    # --- a shared primary does not license an unread claim ------------------
+    ("crashes-then-operational", "@deepseek-ai/dsh-client-modules crashes! It is operational."),
+    ("fails-then-no-issues", "@deepseek-ai/dsh-client-modules fails! It has no issues."),
+    (
+        "hangs-then-passed-checks",
+        "@deepseek-ai/dsh-client-modules hangs! It passed every health check.",
+    ),
+    # --- brackets are not code, and must not delete a health statement -------
+    (
+        "parenthesised-health",
+        "We import @deepseek-ai/dsh-client-modules (runtime dependency)! It is healthy (verified)!",
+    ),
+    (
+        "bracketed-health",
+        "We import @deepseek-ai/dsh-client-modules [runtime dependency]! "
+        "This package does not crash [checked]!",
+    ),
     (
         "ambiguous-antecedent",
         "We use @nebula/theme-engine and @acme/other-thing. It crashes",
@@ -365,9 +382,24 @@ class TestRolesAreFailClosed:
         mention = classify("@a/x is healthy but the server crashes").package_mentions[0]
         assert mention.role is PackageRole.CONFIRMED_NON_PRIMARY
 
+    # These deliberately *do* blame DSH in one sentence and clear it in the next.
+    # The role is then correct; safety comes from the unread claim that follows,
+    # which the end-to-end tests assert.
+    SELF_CONTRADICTING = {
+        "crashes-then-operational",
+        "fails-then-no-issues",
+        "hangs-then-passed-checks",
+    }
+
     def test_no_phrasing_leaves_an_actionable_dsh_subject(self):
-        """Whatever the wording, the report must not end up blaming DSH."""
+        """Whatever the wording, the report must not end up blaming DSH.
+
+        Except where it says so outright and then takes it back - those cases
+        are held by the claim guard, not by the role.
+        """
         for case_id, clause in PHRASINGS:
+            if case_id in self.SELF_CONTRADICTING:
+                continue
             features = feat.extract(f"{clause}. {BOOT_SYMPTOM}")
             assert "@deepseek-ai/dsh-client-modules" not in features.subject_packages, case_id
 
@@ -418,6 +450,42 @@ class TestElevenPhrasingsThroughBothSurfaces:
         assert cli["recommended_action"]["type"] == "upgrade"
         assert cli["recommended_action"]["target"] == "dsh-v0.1.2-alpha.2"
         assert mcp["recommended_action"]["target"] == cli["recommended_action"]["target"]
+
+    @pytest.mark.parametrize(
+        "prefix",
+        [
+            "Our application imports @deepseek-ai/dsh-client-modules before startup. ",
+            "@deepseek-ai/dsh-client-modules is one of our dependencies. ",
+            "The project requires @deepseek-ai/dsh-client-modules. ",
+        ],
+    )
+    def test_a_relation_statement_does_not_cost_the_positive(self, prefix):
+        """`imports`/`requires`/`is a dependency` describe wiring, not condition.
+
+        Reading them as claims we could not interpret made three fully evidenced
+        reports abstain - a recall loss far wider than the two registered gaps.
+        """
+        real = (
+            "dsh web starts but __DSH_BOOT__ has zero entries and zero batches; "
+            "client-modules reports HTML did not preload "
+            "@deepseek-ai/dsh-client-modules/client.js, and the host throws "
+            "TypeError: e.indexOf is not a function"
+        )
+        payload = cli_diagnose(prefix + real)
+        assert payload["incident"]["matched"] is True
+        assert payload["recommended_action"]["target"] == "dsh-v0.1.2-alpha.2"
+
+    def test_a_pointed_unread_claim_blocks_even_a_shared_primary(self):
+        """The invariant the previous round's commit message claimed but did not hold."""
+        payload = cli_diagnose(
+            "@deepseek-ai/dsh-client-modules crashes! It is operational. "
+            "The client boot graph has no entries and packages/loader/src/internal.ts "
+            "throws TypeError: e.indexOf is not a function",
+            debug=True,
+        )
+        assert payload["incident"]["matched"] is False
+        assert payload["recommended_action"]["type"] == "abstain"
+        assert payload["debug"]["features"]["pointed_unread_assertions"]
 
     def test_the_copula_boundary_is_a_real_word_boundary(self):
         """A regex typo once made every bare adjective read as a copula.

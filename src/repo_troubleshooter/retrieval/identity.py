@@ -224,7 +224,15 @@ def evaluate(
     # An unbound *health* claim never blocks: it cannot cause a wrong upgrade.
     unread = [a for a in query.unresolved_state_assertions if a.get("state") != "healthy"]
     unread += list(query.uninterpreted_state_assertions)
-    targeted = [a for a in unread if a.get("package")]
+    # Pointed claims - `It is operational` - name the package by pointing at
+    # it, and block it unconditionally: a shared primary earlier in the report
+    # does not settle what a later sentence was trying to say. Weak ones,
+    # whose subject is ordinary prose that merely follows a mention
+    # (`dsh web starts`), only count when nothing else establishes identity.
+    pointed = [a for a in query.pointed_unread_assertions if a.get("package")]
+    weak_targeted = [
+        a for a in unread if a.get("package") and a.get("binding") == "uninterpreted_weak"
+    ]
     untargeted = [a for a in unread if not a.get("package")]
 
     named_packages = (
@@ -242,9 +250,14 @@ def evaluate(
     }
     has_package_identity = bool(shared_package or shared.get("related_packages"))
 
-    if targeted and not has_package_identity:
-        blamed = sorted({str(a["package"]) for a in targeted})[:3]
-        cues = [a.get("cue", "") for a in targeted][:2]
+    # Unconditional. A shared primary package does not license us to ignore a
+    # claim about that same package we could not read: `@x crashes! It is
+    # operational.` is a report contradicting itself in words we do not
+    # understand, and the earlier sentence agreeing with a candidate does not
+    # settle it. Requiring "no package identity" here was exactly the bypass.
+    if pointed:
+        blamed = sorted({str(a["package"]) for a in pointed})[:3]
+        cues = [a.get("cue", "") for a in pointed][:2]
         return IdentityVerdict(
             accepted=False,
             score=score,
@@ -257,7 +270,7 @@ def evaluate(
             ],
         )
 
-    if untargeted and unaccounted and not has_package_identity:
+    if (weak_targeted or untargeted) and unaccounted and not has_package_identity:
         cues = [a.get("cue", "") for a in untargeted][:2]
         return IdentityVerdict(
             accepted=False,

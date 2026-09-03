@@ -358,6 +358,9 @@ class SymptomFeatures:
     # Claims we could see but could not read: `It malfunctions`. Risk, not
     # silence - an unfamiliar verb must not read as "nothing was said".
     uninterpreted_state_assertions: list[dict[str, Any]] = field(default_factory=list)
+    # The subset whose subject points straight at a package (`It ...`). These
+    # block that package whatever else the report got right.
+    pointed_unread_assertions: list[dict[str, Any]] = field(default_factory=list)
     error: set[str] = field(default_factory=set)
     structural: set[str] = field(default_factory=set)
     behavior: set[str] = field(default_factory=set)
@@ -403,6 +406,7 @@ class SymptomFeatures:
             "package_mentions": self.package_mentions,
             "unresolved_state_assertions": self.unresolved_state_assertions,
             "uninterpreted_state_assertions": self.uninterpreted_state_assertions,
+            "pointed_unread_assertions": self.pointed_unread_assertions,
             "subject_paths": sorted(self.subject_paths),
             "subject_builtins": sorted(self.subject_builtins),
             "subject_modules": sorted(self.subject_modules),
@@ -506,6 +510,7 @@ def extract(text: str | None, *, known_modules: frozenset[str] = frozenset()) ->
         package_mentions=[m.to_json() for m in subjects.package_mentions],
         unresolved_state_assertions=[a.to_json() for a in subjects.unresolved_assertions],
         uninterpreted_state_assertions=[a.to_json() for a in subjects.uninterpreted_assertions],
+        pointed_unread_assertions=[a.to_json() for a in subjects.pointed_unread_assertions],
         subject_paths=subjects.paths,
         subject_builtins=subjects.builtins,
         subject_modules=subjects.modules,
@@ -529,6 +534,7 @@ def merge(*feature_sets: SymptomFeatures) -> SymptomFeatures:
         merged.package_mentions += features.package_mentions
         merged.unresolved_state_assertions += features.unresolved_state_assertions
         merged.uninterpreted_state_assertions += features.uninterpreted_state_assertions
+        merged.pointed_unread_assertions += features.pointed_unread_assertions
         merged.subject_builtins |= features.subject_builtins
         merged.subject_modules |= features.subject_modules
         merged.structural |= features.structural

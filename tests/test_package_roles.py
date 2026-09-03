@@ -122,6 +122,7 @@ class TestOnlyPrimaryDecidesIdentity:
         assert verdict.rejection in {
             "different_subject",
             "unread_claim_about_a_named_package",
+            "unbound_state_assertion",
             "unestablished_subject",
         }, verdict.rejection
 
@@ -137,6 +138,7 @@ class TestOnlyPrimaryDecidesIdentity:
         assert verdict.rejection in {
             "different_subject",
             "unread_claim_about_a_named_package",
+            "unbound_state_assertion",
             "unestablished_subject",
         }, verdict.rejection
 
