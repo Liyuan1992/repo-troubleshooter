@@ -44,7 +44,7 @@ from enum import StrEnum
 # Bumped whenever subject or behaviour extraction changes in a way that makes
 # already-mined signatures wrong. The value is stored alongside the mined rows;
 # a database holding an older version must be rebuilt before it may be used.
-FEATURE_EXTRACTOR_VERSION = 12
+FEATURE_EXTRACTOR_VERSION = 13
 
 # Directories every package has; a path tail led by one of these names nothing.
 GENERIC_PATH_DIRS = frozenset(
@@ -950,6 +950,26 @@ ANAPHOR_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The same nouns ANAPHOR_RE uses, but with the slot in front of them parsed as
+# determiner-plus-modifiers instead of matched against three fixed words. That
+# is what separates `said package`, `the same package` and `this exact module`
+# from `the boot graph`: the head noun decides, not the determiner. No noun is
+# added here - extending the list was declined, and would not have fixed the
+# shape of the defect.
+PACKAGE_NOUN_RE = re.compile(
+    r"^(?:\W*\w+\W+){0,2}?\W*(?<![\w-])"
+    r"(?:packages?|modules?|librar(?:y|ies)|dependenc(?:y|ies)|plugins?|components?)"
+    r"(?![\w-])",  # a hyphenated modifier is not a head noun: `plugin-registered commands`
+    re.IGNORECASE,
+)
+
+# A subject that opens with a package-shaped token: `@dsh-client-modules is
+# operational`. The token need not resolve to anything we know - an unknown
+# package is still a package, and a claim about one is still a claim about a
+# package.
+SUBJECT_PACKAGE_TOKEN_RE = re.compile(r"^@[\w.-]+(?:/[\w.-]+)?\b")
+
+
 # A subject that names something other than a package: "the server", "the host
 # process", "the build". These claims are bound elsewhere and are not our
 # business - but they are bound, so they are not unresolved either.
@@ -976,7 +996,8 @@ ENTITY_IN_SUBJECT_RE = re.compile(r"@[\w.-]+/[\w.-]+|node:[\w/]+|[\w.-]+/[\w.-]+
 # no room for prose. A parenthesis is not evidence of code - `(runtime
 # dependency)` and `[checked]` are ordinary things to write in a bug report, and
 # treating them as code once deleted an explicit health statement.
-CODE_FENCE_RE = re.compile(r"```|~~~|`[^`\n]+`")
+CODE_BLOCK_RE = re.compile(r"```|~~~")
+INLINE_SPAN_RE = re.compile(r"`([^`\n]+)`")
 STACK_FRAME_RE = re.compile(
     r"^\s*(?:at\s+\S+|File\s+\"[^\"]+\",\s*line\s+\d+|[\w./-]+\.(?:ts|js|py|go|rs):\d+)",
     re.IGNORECASE | re.MULTILINE,
@@ -1024,6 +1045,27 @@ def _subject_prefix(clause: str) -> str:
     return " ".join(words[:4])
 
 
+# Words that open a subordinate clause. Whatever verb follows one, it is not
+# the main predicate.
+SUBORDINATOR_RE = re.compile(
+    r"\b(?:when|whenever|while|after|before|because|since|if|unless|although|though"
+    r"|whereas|until|once|as)\b",
+    re.IGNORECASE,
+)
+
+# A main predicate follows its subject closely. Four words covers `Our
+# application imports @x` and `@x is one of our dependencies` without reaching
+# a verb buried at the end of a sentence.
+MAIN_PREDICATE_WORD_LIMIT = 4
+
+# The word standing where a predicate stands: letters, then whatever
+# punctuation ends the clause. Never another path, scope or file name.
+PREDICATE_WORD_RE = re.compile(r"^[A-Za-z]+[^\w/@]*$")
+
+# Words, as opposed to the punctuation a clause ends on.
+WORD_RE = re.compile(r"\w+")
+
+
 def _clause_is_code(clause: str) -> bool:
     """Is this clause code or log output rather than someone writing a sentence?
 
@@ -1031,18 +1073,78 @@ def _clause_is_code(clause: str) -> bool:
     ordinary reports - `(runtime dependency)`, `[checked]` - and skipping a
     clause because it contains one deleted explicit health statements.
     """
-    if CODE_FENCE_RE.search(clause) or STACK_FRAME_RE.search(clause):
+    if CODE_BLOCK_RE.search(clause) or STACK_FRAME_RE.search(clause):
         return True
-    words = [w for w in clause.split() if w]
+    # An inline span is a quotation, and what is quoted can be a sentence:
+    # "Diagnostic summary: `It is operational`" states a condition. Treating the
+    # backticks as code hid that claim while the same region was still allowed
+    # to contribute paths and symbols towards identity - evidence counted in one
+    # direction only.
+    body = INLINE_SPAN_RE.sub(r"\1", clause)
+    words = [w for w in body.split() if w]
     if not words:
         return True
-    punctuation = len(CODE_PUNCTUATION_RE.findall(clause))
+    punctuation = len(CODE_PUNCTUATION_RE.findall(body))
     return punctuation >= 2 and punctuation / len(words) > 0.3
 
 
+def _predicate_follows(clause: str, at: int) -> bool:
+    """Is there a word standing where a predicate stands, after position `at`?
+
+    `@types/react bigint/ReactNode)` names a package and then names another
+    path: an enumeration inside a bug title, with nothing predicated of
+    anything. `@x is operational` has `is`. Without this a title that merely
+    lists packages counted as a claim about the first one.
+    """
+    return any(PREDICATE_WORD_RE.match(word) for word in clause[at:].split())
+
+
+def _subject_is_a_package_token(clause: str) -> bool:
+    """Does this clause open with a package token and then say something about it?
+
+    `@dsh-client-modules is operational` does. `@types/react bigint/ReactNode)`
+    - the tail of a bug title listing what failed - does not: a package token
+    followed by another path-shaped token is an enumeration, not a subject with
+    a predicate behind it.
+    """
+    text = clause.strip()
+    match = SUBJECT_PACKAGE_TOKEN_RE.match(text)
+    if match is None:
+        return False
+    rest = text[match.end() :].split()
+    return bool(rest) and PREDICATE_WORD_RE.match(rest[0]) is not None
+
+
+def _subject_names_a_package_kind(clause: str) -> bool:
+    """Does this clause's *subject* refer to a package by its head noun?
+
+    `Said package is operational` does: the noun phrase opens the clause and a
+    predicate follows it. `while resolving a module` does not - there the noun
+    is the object of a verb and nothing follows it, and reading it as a subject
+    made the flagship incident abstain.
+    """
+    text = clause.strip()
+    match = PACKAGE_NOUN_RE.match(text)
+    if match is None:
+        return False
+    return bool(WORD_RE.findall(text[match.end() :]))
+
+
 def _is_relation_statement(clause: str) -> bool:
-    """`The project requires @x` describes wiring, not condition."""
-    return bool(RELATION_STATEMENT_RE.search(clause))
+    """Is *this clause* about wiring rather than condition?
+
+    `The project requires @x` is. `It has no issues when using plugins` is not:
+    its main predicate is `has no issues`, and `using` only opens a subordinate
+    clause. Searching the whole clause let any trailing `using`/`requiring`/
+    `importing` delete the claim standing in front of it, so the relation verb
+    now has to sit where a main predicate sits - in the head segment, close
+    behind the subject.
+    """
+    head = SUBORDINATOR_RE.split(clause, maxsplit=1)[0]
+    match = RELATION_STATEMENT_RE.search(head)
+    if match is None:
+        return False
+    return len(head[: match.start()].split()) <= MAIN_PREDICATE_WORD_LIMIT
 
 
 BINDING_EXPLICIT = "explicit"
@@ -1058,6 +1160,20 @@ BINDING_UNINTERPRETED = "uninterpreted"
 #: only counts where nothing else establishes identity.
 BINDING_UNINTERPRETED_WEAK = "uninterpreted_weak"
 
+#: Where an unread claim's target came from. Strength follows the *source*, not
+#: the wording of the subject. Deciding it by "does the subject match the
+#: pronoun list" left a clause that spells the package out - `@dsh-client-modules
+#: is operational` - weaker than one that only points at it.
+#:
+#: The clause names a package, or its subject is a package-shaped token.
+SOURCE_EXPLICIT_PACKAGE = "explicit_package"
+#: The subject refers back to a package: a pronoun, or a noun phrase whose head
+#: noun names a package-kind.
+SOURCE_RESOLVED_ANAPHOR = "resolved_anaphor"
+#: Ordinary prose that happens to follow a mention. The nearest package is a
+#: guess, and the claim may not be about a package at all.
+SOURCE_PROXIMITY_GUESS = "proximity_guess"
+
 
 @dataclass(frozen=True)
 class StateAssertion:
@@ -1069,6 +1185,10 @@ class StateAssertion:
     subject_text: str
     cue: str
     start: int
+    #: For unread claims, where the target came from: SOURCE_EXPLICIT_PACKAGE,
+    #: SOURCE_RESOLVED_ANAPHOR or SOURCE_PROXIMITY_GUESS. Empty for claims we
+    #: could read, where the binding already says how they attached.
+    source: str = ""
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -1077,6 +1197,7 @@ class StateAssertion:
             "package": self.package,
             "subject": self.subject_text[:40],
             "cue": self.cue[:60],
+            "source": self.source,
         }
 
 
@@ -1155,18 +1276,30 @@ def extract_state_assertions(
             ):
                 subject = _strip_wrapper(_subject_prefix(clause))
                 target = None
-                if inside:
+                # How firmly the claim is attached is a question about its
+                # subject, and it is settled before we go looking for a nearby
+                # package to pin it on. Reading it off the pronoun list instead
+                # made `@dsh-client-modules is operational` - which names the
+                # package outright - weaker than `it is operational`.
+                if inside and _predicate_follows(clause, inside[0][1] - offset):
                     target = inside[0][2]
-                elif subject and not ENTITY_IN_SUBJECT_RE.search(subject):
+                    source = SOURCE_EXPLICIT_PACKAGE
+                elif _subject_is_a_package_token(clause):
+                    source = SOURCE_EXPLICIT_PACKAGE
+                elif ANAPHOR_RE.match(subject) or _subject_names_a_package_kind(clause):
+                    source = SOURCE_RESOLVED_ANAPHOR
+                else:
+                    source = SOURCE_PROXIMITY_GUESS
+                    if inside:
+                        target = inside[0][2]
+                if target is None and subject and not ENTITY_IN_SUBJECT_RE.search(subject):
                     antecedents = {m[2] for m in mention_spans if m[0] < offset}
                     target = next(iter(antecedents)) if len(antecedents) == 1 else None
                 if target is not None or subject:
-                    # `It ...` points at the package; `dsh web starts ...` is just
-                    # a sentence that happens to follow one.
                     binding = (
-                        BINDING_UNINTERPRETED
-                        if ANAPHOR_RE.match(subject)
-                        else BINDING_UNINTERPRETED_WEAK
+                        BINDING_UNINTERPRETED_WEAK
+                        if source == SOURCE_PROXIMITY_GUESS
+                        else BINDING_UNINTERPRETED
                     )
                     assertions.append(
                         StateAssertion(
@@ -1176,6 +1309,7 @@ def extract_state_assertions(
                             subject,
                             clause.strip()[:60],
                             offset,
+                            source,
                         )
                     )
             continue

@@ -29,6 +29,7 @@ from repo_troubleshooter.retrieval.identity import evaluate
 REFUSAL_REASONS = {
     "different_subject",
     "unread_claim_about_a_named_package",
+    "unread_claim_about_an_unnamed_package",
     "unbound_state_assertion",
     "unestablished_subject",
     "insufficient_identity_evidence",

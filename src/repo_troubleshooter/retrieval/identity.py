@@ -230,6 +230,11 @@ def evaluate(
     # whose subject is ordinary prose that merely follows a mention
     # (`dsh web starts`), only count when nothing else establishes identity.
     pointed = [a for a in query.pointed_unread_assertions if a.get("package")]
+    # A pointed claim whose target we could not resolve - `Said package is
+    # operational` in a report that names no package we recognise - is still a
+    # claim about a package. Which one is unknown, so no package is safe to act
+    # on, and identity from a path or symbol cannot settle it either.
+    pointed_unresolved = [a for a in query.pointed_unread_assertions if not a.get("package")]
     weak_targeted = [
         a for a in unread if a.get("package") and a.get("binding") == "uninterpreted_weak"
     ]
@@ -267,6 +272,21 @@ def evaluate(
                 f"this report says something about {blamed} that could not be read ({cues}), "
                 "so its condition was never established and a shared path, module or symbol "
                 "cannot authorise an action"
+            ],
+        )
+
+    if pointed_unresolved:
+        cues = [a.get("cue", "") for a in pointed_unresolved][:2]
+        subjects_seen = [a.get("subject", "") for a in pointed_unresolved][:2]
+        return IdentityVerdict(
+            accepted=False,
+            score=score,
+            rejection="unread_claim_about_an_unnamed_package",
+            shared=shared,
+            reasons=[
+                f"this report states a condition of some package ({subjects_seen}) in words "
+                f"that could not be read ({cues}), and never says which package, so no "
+                "action about any package is authorised"
             ],
         )
 

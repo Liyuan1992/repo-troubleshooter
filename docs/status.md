@@ -322,7 +322,7 @@ excluded.
 | **abstention precision** | **0.75** | 51 |
 | documented recall gaps | 1 | - |
 | future-leakage violations | 0 | - |
-| latency p50 / p95 / max | 55 ms / 766 ms / 814 ms | 69 |
+| latency p50 / p95 / max | 83 ms / 900 ms / 944 ms | 69 |
 
 **Verification evidence.** `python evals/runner.py` writes
 `evals/reports/latest.json`; the hard gates are re-asserted in
@@ -436,9 +436,12 @@ worse than a refusal.
 Every change to how claims are read bumps that version and ships a migration
 that deletes the mined rows and clears the recorded version, so an upgraded
 database is *forced* through a rebuild rather than silently diagnosing against
-stale features. The current version is **12**; the migration
+stale features. The migration
 `8f2c496d97c2_claim_reading_rules_invalidate_` invalidated version 11 when
-structural code detection and relation statements changed what a clause asserts.
+structural code detection and relation statements changed what a clause
+asserts, and `4b4507bd30a7_claim_strength_follows_target_source` invalidated
+version 12 when claim strength moved onto the target's source. The current
+version is **13**.
 
 **Verification evidence.** After `db init` on the existing database, `diagnose`
 refused with `no symptom signatures are stored ... build them with:
@@ -447,8 +450,9 @@ repo-troubleshooter signatures <repo>` and exited non-zero; after
 walked the same way on the live database: `alembic upgrade head`, then
 `diagnose` exiting 1 with the stale-signature refusal, then a rebuild
 (31,313 attempted / 15,689 inserted, `extractor_version: 12` recorded), then the
-same query answering. `tests/test_signature_freshness.py` rewinds the stored version
-and asserts the refusal on all three paths - engine (raises), CLI (non-zero exit,
+same query answering, and again for version 13.
+`tests/test_signature_freshness.py` rewinds the stored version and asserts the
+refusal on all three paths - engine (raises), CLI (non-zero exit,
 no traceback, `--rebuild` in the message) and MCP (`signatures_stale` structured
 error) - then restores it.
 
@@ -476,7 +480,8 @@ Earlier rounds reported the attempted figure (32,882, and 19,185 before that) as
 if it were storage. It was not.
 
 These three come from `sync_state.stats` for source `signatures`, and a direct
-`SELECT count(*)` on `symptom_signature` returns the same 15,689. An earlier
+`SELECT count(*)` on `symptom_signature` returns the same 15,689. The extractor
+version 13 rebuild produced the same three figures. An earlier
 draft of this document quoted 31,314 / 15,689 while the database held
 31,316 / 15,691 - numbers from a *different* rebuild than the one being
 described. The figures here are re-read from the database after the extractor
@@ -820,6 +825,74 @@ an inline snippet) is still read as prose.
 
 **Blockers.** None new. The unsafe-action figures continue to describe the
 committed set only; the hidden acceptance set is not ours to run.
+
+---
+
+## 18. Claim strength, and where it comes from
+
+**Current fact.** Two more ways past the claim gate, both found by review.
+
+**Strength was read off the subject's wording.** An unread claim counted as
+*pointed* - blocking unconditionally - only when its subject matched the pronoun
+list. So a clause that spelled the package out was weaker than one that merely
+pointed at it: `@dsh-client-modules crashes! @dsh-client-modules is operational.`
+upgraded, as did `Said package is operational`, `The same package passed every
+health check` and `This exact module has no issues`. Strength now follows
+**where the target came from**, recorded on the assertion itself:
+
+| source | what it means | strength |
+|---|---|---|
+| `explicit_package` | the clause names a package, or its subject is a package-shaped token | pointed |
+| `resolved_anaphor` | the subject refers back to a package: a pronoun, or a noun phrase whose head noun names a package-kind | pointed |
+| `proximity_guess` | ordinary prose that happens to follow a mention | weak |
+
+No pronoun and no noun was added to any list. What changed is that the slot in
+front of the noun is parsed - determiner, then modifiers, then head noun - so
+`said package`, `the same package` and `this exact module` are recognised by
+shape, while `the boot graph` still is not. Three structural conditions keep the
+rule from over-reaching: the head noun may not be a hyphenated modifier
+(`plugin-registered commands`), it must have a predicate behind it (`while
+resolving a module` does not), and a named package only makes a claim explicit
+when a predicate follows it (`@types/react bigint/ReactNode)` in a bug title is
+an enumeration). Each of those was a real regression caught by the eval suite
+before this was committed.
+
+A pointed claim whose target cannot be resolved now blocks as well. `Said
+package is operational` in a report naming no package we recognise is still a
+claim about a package; which one is unknown, so no package is safe to act on,
+and a shared path or symbol cannot settle it.
+
+**A relation verb anywhere exempted the whole clause.** `_is_relation_statement`
+searched the entire clause, so `It has no issues when using plugins` and `It
+passed every health check after requiring dependencies` were filed as wiring and
+their claims discarded. The verb now has to sit where a main predicate sits: in
+the head segment, before any subordinator, within four words of the start.
+
+**An inline span hid a claim while its neighbours were still read.** Backticks
+made a clause code, so ``Diagnostic summary: `It is operational` `` lost its
+claim - while the same region kept contributing paths and symbols towards an
+upgrade. That is evidence counted in one direction only. An inline span is now
+read as the quotation it is; fenced blocks and stack frames are still code.
+
+**Verification evidence.** All seven reported inputs return no action through
+the installed CLI, and so do the five from the previous round. The four
+positives - the bare boot-graph report and three relation-prefixed variants -
+still upgrade to `dsh-v0.1.2-alpha.2`. The seven are in the public phrasing set,
+so each also runs through a freshly launched `repo-troubleshooter-mcp` stdio
+process, which must abstain and must agree with the CLI. 402 unit tests pass;
+evals are **68/69** with the one long-standing gap; ruff, format and mypy are
+clean. Extractor version 12 -> 13 with an invalidation migration, walked on the
+live database: upgrade, refusal, rebuild (31,313 / 15,689 / 15,689,
+`extractor_version: 13`), answer.
+
+**Remaining target.** The head-noun and predicate-position rules are shallow
+parsing, not a parser. A subject that puts its head noun more than two words
+after the determiner, or a main predicate more than four words in, is outside
+what they see.
+
+**Blockers.** None new. The unsafe-action figures continue to describe the
+committed set only; the hidden acceptance set is not ours to run, and no remote
+is configured, so there is still no external CI evidence.
 
 ---
 

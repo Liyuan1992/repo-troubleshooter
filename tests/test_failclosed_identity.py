@@ -142,6 +142,26 @@ PHRASINGS: list[tuple[str, str]] = [
         "ambiguous-antecedent",
         "We use @nebula/theme-engine and @acme/other-thing. It crashes",
     ),
+    # --- spelling the package out is stronger than pointing at it -----------
+    (
+        "named-then-operational",
+        "@deepseek-ai/dsh-client-modules crashes! @deepseek-ai/dsh-client-modules is operational.",
+    ),
+    ("said-package-operational", "Said package is operational."),
+    ("the-same-package-passed", "The same package passed every health check."),
+    ("this-exact-module-no-issues", "This exact module has no issues."),
+    # --- a relation verb in a subordinate clause is not the predicate -------
+    (
+        "no-issues-when-using",
+        "@deepseek-ai/dsh-client-modules fails! It has no issues when using plugins.",
+    ),
+    (
+        "passed-after-requiring",
+        "@deepseek-ai/dsh-client-modules hangs! "
+        "It passed every health check after requiring dependencies.",
+    ),
+    # --- an inline span is a quotation, and can carry a claim ---------------
+    ("inline-span-health", "Diagnostic summary: `It is operational`"),
 ]
 
 CASES = [pytest.param(f"{clause}. {BOOT_SYMPTOM}", id=case_id) for case_id, clause in PHRASINGS]
@@ -389,6 +409,9 @@ class TestRolesAreFailClosed:
         "crashes-then-operational",
         "fails-then-no-issues",
         "hangs-then-passed-checks",
+        "named-then-operational",
+        "no-issues-when-using",
+        "passed-after-requiring",
     }
 
     def test_no_phrasing_leaves_an_actionable_dsh_subject(self):
@@ -474,6 +497,72 @@ class TestElevenPhrasingsThroughBothSurfaces:
         payload = cli_diagnose(prefix + real)
         assert payload["incident"]["matched"] is True
         assert payload["recommended_action"]["target"] == "dsh-v0.1.2-alpha.2"
+
+    @pytest.mark.parametrize(
+        ("case_id", "clause"),
+        [
+            (
+                "named-outright",
+                "@deepseek-ai/dsh-client-modules crashes! "
+                "@deepseek-ai/dsh-client-modules is operational.",
+            ),
+            ("said-package", "Said package is operational."),
+            ("the-same-package", "The same package passed every health check."),
+            ("this-exact-module", "This exact module has no issues."),
+        ],
+    )
+    def test_strength_follows_the_source_not_the_pronoun_list(self, case_id, clause):
+        """A clause that spells the package out is not weaker than `it is`.
+
+        Deciding an unread claim's strength by matching its subject against a
+        pronoun list left the strongest reference - the package name itself -
+        classified as a guess, and five reports upgraded because of it.
+        """
+        features = feat.extract(f"{clause} {BOOT_SYMPTOM}")
+        pointed = features.pointed_unread_assertions
+        assert pointed, f"{case_id}: no pointed claim was recorded"
+        assert all(a["source"] in {"explicit_package", "resolved_anaphor"} for a in pointed), (
+            f"{case_id}: {[a['source'] for a in pointed]}"
+        )
+        payload = cli_diagnose(f"{clause} {BOOT_SYMPTOM}")
+        assert payload["recommended_action"]["type"] not in UNSAFE, case_id
+
+    @pytest.mark.parametrize(
+        ("case_id", "clause"),
+        [
+            (
+                "subordinate-using",
+                "@deepseek-ai/dsh-client-modules fails! It has no issues when using plugins.",
+            ),
+            (
+                "subordinate-requiring",
+                "@deepseek-ai/dsh-client-modules hangs! "
+                "It passed every health check after requiring dependencies.",
+            ),
+        ],
+    )
+    def test_a_subordinate_relation_verb_does_not_delete_the_claim(self, case_id, clause):
+        """`using`/`requiring` after the predicate is wiring in a subordinate clause.
+
+        Exempting the whole clause because a relation verb appeared anywhere in
+        it let a trailing `when using plugins` delete `It has no issues`.
+        """
+        features = feat.extract(f"{clause} {BOOT_SYMPTOM}")
+        assert features.pointed_unread_assertions, f"{case_id}: the claim was deleted"
+        payload = cli_diagnose(f"{clause} {BOOT_SYMPTOM}")
+        assert payload["recommended_action"]["type"] not in UNSAFE, case_id
+
+    def test_a_quoted_claim_is_read_like_the_paths_around_it(self):
+        """Code evidence counted towards identity while code hid the claim beside it.
+
+        An inline span is a quotation, and what is quoted can be a sentence.
+        Skipping it as code let the same region contribute paths and symbols
+        towards an upgrade while its state claim was thrown away.
+        """
+        report = f"Diagnostic summary: `It is operational` {BOOT_SYMPTOM}"
+        assert feat.extract(report).pointed_unread_assertions
+        payload = cli_diagnose(report)
+        assert payload["recommended_action"]["type"] not in UNSAFE
 
     def test_a_pointed_unread_claim_blocks_even_a_shared_primary(self):
         """The invariant the previous round's commit message claimed but did not hold."""
