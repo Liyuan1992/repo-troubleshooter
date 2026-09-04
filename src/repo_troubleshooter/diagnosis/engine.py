@@ -339,7 +339,13 @@ def diagnose(
         change = resolve_change(git, releases, symptom_tokens, symptom_text=symptom_text)
         debug.change = change.to_json() if change else None
         if change is not None:
-            containment = compute_containment(session, repo, change.commit_sha, git=git)
+            # `persist=False` means read-only, and that has to include the
+            # containment cache. Refreshing it here rewrote `computed_at` and
+            # the evidence transcript on every diagnosis, so a tool documented
+            # as read-only left a trace in the database on each call.
+            containment = compute_containment(
+                session, repo, change.commit_sha, git=git, persist=persist
+            )
             debug.containment = containment.to_json()
             release_obj = _release_by_tag(releases, containment.first_release_containing)
 

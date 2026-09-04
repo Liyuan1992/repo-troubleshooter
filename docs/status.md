@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-09-04 (mainline iteration on baseline `bf29314`). Fields stay
+Updated: 2026-09-04b (mainline iteration on baseline `bf29314`). Fields stay
 separated: **current fact**, **verification evidence**, **remaining target**,
 **blockers**. Nothing counts as verified because a test exists; each row names the
 observation behind it.
@@ -355,11 +355,11 @@ database that is down, empty, foreign or stale fails within ~3 seconds with a
 command to run, never a traceback; MCP returns a structured error instead of
 hanging.
 
-**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **462
+**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **467
 passed**, measured. The suite has grown each round - 118, 146, 157, 178, 188,
-216, 263, 291, 320, 354, 355, 374, 402, 438, now 462 - so a number quoted from
-an earlier round no longer matches, and several places in this document had gone
-on quoting one.
+216, 263, 291, 320, 354, 355, 374, 402, 438, 462, now 467 - so a number quoted
+from an earlier round no longer matches, and several places in this document had
+gone on quoting one.
 `tests/test_mcp_roundtrip.py`
 drives a real MCP SDK client: lists tools, calls both, asserts CLI/MCP parity on
 status, action, target, `incident.matched`, `stages.stopped_at` and the
@@ -379,8 +379,8 @@ payloads beyond the current coverage note.
 ## 6. Data
 
 **Current fact.** 550 discussions, 1510 comments, 123 doc files, 7 releases,
-275 package manifests, **15,689 stored symptom signatures** (a SQL count taken
-after the rebuild at extractor version 14, and equal to the `rows_stored_total`
+275 package manifests, **15,682 stored symptom signatures** (a SQL count taken
+after the rebuild at extractor version 15, and equal to the `rows_stored_total`
 the rebuild recorded; earlier rounds reported inflated figures - see the
 row-accounting note below). Discussion coverage is still partial and reports `degraded`.
 A paced backfill (`rt sync … --backfill-pages N`) walks older history a few pages
@@ -404,7 +404,7 @@ design. The second repository has not been started.
 ## 7. Delivery
 
 **Current fact.** Local gates all pass: `uv sync --extra dev --frozen`,
-`ruff check .`, `ruff format --check .`, `mypy src`, `pytest` (462 tests),
+`ruff check .`, `ruff format --check .`, `mypy src`, `pytest` (467 tests),
 `evals/runner.py`, `docker compose up -d`, `db init`, `db ping`, `status`,
 `uv build`, and a clean-venv install of the built wheel running `db init`, a
 real `diagnose` against the synced database, and the same `diagnose` over stdio
@@ -487,16 +487,17 @@ what the database holds, so the counts are now separate:
 
 | count | meaning | last rebuild |
 |---|---|---|
-| `rows_attempted` | (kind, value) pairs offered to the database | 31,313 |
-| `rows_inserted` | of those, actually new | 15,689 |
-| `rows_stored_total` | rows the repository holds afterwards | **15,689** |
+| `rows_attempted` | (kind, value) pairs offered to the database | 31,299 |
+| `rows_inserted` | of those, actually new | 15,682 |
+| `rows_stored_total` | rows the repository holds afterwards | **15,682** |
 
 Earlier rounds reported the attempted figure (32,882, and 19,185 before that) as
 if it were storage. It was not.
 
 These three come from `sync_state.stats` for source `signatures`, and a direct
-`SELECT count(*)` on `symptom_signature` returns the same 15,689. The extractor
-version 13 and 14 rebuilds produced the same three figures. An earlier
+`SELECT count(*)` on `symptom_signature` returns the same 15,682. They fell by
+seven rows at extractor 15, where quotation stopped contributing subjects. 65
+rows are marked `quoted`. An earlier
 draft of this document quoted 31,314 / 15,689 while the database held
 31,316 / 15,691 - numbers from a *different* rebuild than the one being
 described. The figures here are re-read from the database after the extractor
@@ -504,9 +505,9 @@ version 12 rebuild rather than carried forward.
 
 By kind, read from the database after the last gate of this round ran:
 structural 5,142; behavior 4,666; component 2,073; subject_module 1,473;
-subject_unresolved 723; error 575; subject_path 557; subject_package **180**;
-subject_builtin 94; subject_dependency 72; cause 70;
-subject_confirmed_non_primary 50; subject_conflicted 14.
+subject_unresolved 716; error 575; subject_path 557; subject_package **181**;
+subject_builtin 94; subject_dependency 71; cause 70;
+subject_confirmed_non_primary 49; subject_conflicted 15.
 
 The four subject counts moved because claim reading changed, and the figures
 here had been left at the extractor-12 rebuild's. They are now taken last, after
@@ -1068,18 +1069,135 @@ all five reduced-relative phrasings return no action, each stopping at
 `stopped_at: retrieved_candidate`. Seven positives still upgrade to
 `dsh-v0.1.2-alpha.2`, including a real report that pastes its own trace into a
 fence and `We are using @x`, which the finiteness rule has to keep reading as
-wiring. `pytest` → **462 passed** with the read-only guard active; evals
+wiring. `pytest` → **467 passed** with the read-only guard active; evals
 **68/69**; ruff, format and mypy clean. The wheel gate ran against the live
 database from a clean install. Signature counts and the by-kind table in
 sections 6 and 9 were re-read from the database after the last gate.
 
-**Remaining target.** The quotation model handles fenced blocks. Indented code
-blocks and quoted-reply prefixes (`> `) are not regions yet, so a report that
-quotes another ticket that way is still read as its own words.
+**Remaining target.** *(Corrected in section 21.)* This paragraph described
+`> ` replies and indented blocks as outside the quotation model and filed that
+under "remaining target". It was not a recall gap: both produced **unsafe
+upgrades**, demonstrated by holdout inputs. A known path to a wrong action is a
+blocker, and writing `Blockers: None new` underneath one was wrong. Section 21
+closes both.
 
-**Blockers.** None new. The unsafe-action figures continue to describe the
-committed set only; the hidden acceptance set is not ours to run, and no remote
-is configured, so there is still no external CI evidence.
+**Blockers.** *(Superseded.)* At the time this section was written there was an
+open P0: quotation was recognised only as a fence.
+
+---
+
+## 21. What a quotation is, and what "outside it" has to prove
+
+**Current fact.** The previous round wrote a boundary into the "remaining
+target" line and left `Blockers: None new` under it. That was wrong twice over:
+the boundary was reachable by holdout inputs, and what it produced was not a
+missed match but an **unsafe upgrade**. A known path to a wrong action is a
+blocker. This section closes it.
+
+### Quotation is not only three backticks
+
+`> ` replies are quotation everywhere mail and issue trackers are used, and both
+of these upgraded:
+
+    Copied from a resolved ticket, not our incident:
+    > <the whole symptom>
+
+    Archived documentation example only:
+        <the whole symptom>
+
+`> ` runs are quotation unconditionally now. Indentation is *not*: four spaces
+means "code" in Markdown, and reporters indent their own stack traces
+constantly - treating indentation alone as quotation cost three real incidents
+in the eval suite whose only evidence was an indented trace. An indented block
+is quotation when a label in front of it hands the material off:
+`Copied from`, `Archived … example`, `for reference`, `not our incident`. That
+is a small closed vocabulary and the only one in the quotation model, because
+nothing in the *shape* of an indented block distinguishes `Archived
+documentation example only:` from `Here is its trace:`. Its limit is worth
+stating plainly: a report that marks provenance in words not on that list reads
+as the reporter's own.
+
+Quotation is also found on the text **as written**. `normalize` collapses runs
+of whitespace, so indentation had stopped existing before anything looked for
+it.
+
+### "One shared value outside the quotation" was not a bridge
+
+The stage-two rule was: is there any shared identity value that is not
+quoted-only. A generic `TypeError`, or merely naming the same file, satisfied
+that and re-authorised an entire quoted ticket. The rule is now what the review
+asked for: **run the identity gate again on the report with its quotations
+removed, and require that view to identify the incident by itself, by the same
+rules.**
+
+That change also exposed a defect underneath it. `packages/loader/src/internal.ts`
+yields a path, the symbol `internal.ts` and the component `loader` - one mention
+of one file, counted three times, satisfying "a path plus a second class". A
+symbol contained in a shared path is that path again, not independent evidence,
+and no longer counts as the second class.
+
+### The candidate side had to be symmetric
+
+Provenance was computed for the query and nowhere else, so an upstream thread
+that was itself largely a quotation could still identify a query on the strength
+of what it had quoted. `symptom_signature` now carries a `quoted` column, set
+during mining and read back into an unquoted view of the candidate, and the gate
+runs on both views. 65 of 15,682 rows are marked quoted.
+
+### English writes relative clauses with no marker
+
+`The same package we use through the fallback ran cleanly afterward`, `The
+package our fallback imports ran cleanly`, `The same package we rely on went
+green` - a zero-marker relative clause, which no participle test or relative
+pronoun can see, and whose main verbs (`ran`, `went`) are irregular, so no
+morphology finds them either. What is visible is the subject: **a clause whose
+subject is a package-kind noun phrase is predicating something of that package**,
+so it is never a wiring statement about something else, and its claim is never
+dropped. That reading is deliberately loose, and loose here fails closed - the
+cost is a claim recorded, not a claim ignored.
+
+### The tests were still writing to the synced database
+
+Two things were true at once: the final snapshot matched, and the suite wrote to
+the database while it ran. The stale-corpus tests rewound the *real* repository's
+extractor version and committed, so for the length of the run the tool's corpus
+was stale to any other process, and a killed test would have left it that way.
+They now build a repository of their own. Separately, `diagnose` refreshed the
+containment cache even under `persist=False`, and the CLI persists by default:
+both were writing on every call a test made. `persist` now reaches the
+containment cache, `diagnose --no-persist` exists, and every test that drives the
+CLI uses it.
+
+The guard compared row counts, which cannot see an update in place or a delete
+paired with an insert. It compares a content digest per table now - and that is
+how the containment writes were found at all.
+
+### A recall claim that was not true
+
+A test named `test_a_report_that_quotes_its_own_trace_still_upgrades` put the
+whole symptom *outside* the fence and an unrelated snippet inside it. The claim
+in section 20 rested on that test and was wrong. A report whose identifying
+evidence is only inside a fence **abstains**, and that is now asserted under its
+own name, together with the indented form of the same report, which still
+upgrades.
+
+**Verification evidence.** All eleven reported negatives return no action
+through the installed CLI, each stopping at `stopped_at: retrieved_candidate`;
+both reported positives behave as this section describes - one upgrades, the
+other is the registered gap above. `pytest` → **467 passed** with the
+content-digest guard active and no leftover rows; evals **68/69**; ruff, format
+and mypy clean. Extractor 14 → 15 with a migration that adds the column and
+invalidates the corpus; rebuilt to 31,299 / 15,682 / 15,682.
+
+**Remaining target.** The provenance-label vocabulary is the one place a
+report's wording still decides something, and it is small. Fences and `>` need
+no words; indented blocks do.
+
+**Blockers.** None known. That sentence means: no input demonstrated to produce
+an unsafe action is currently unfixed - it does not mean none exists, and the
+last four rounds each found some. The unsafe-action figures describe the
+committed set; the hidden acceptance set is not ours to run; no remote is
+configured, so there is still no external CI evidence.
 
 ---
 

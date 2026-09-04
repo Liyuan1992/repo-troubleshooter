@@ -510,6 +510,15 @@ def evaluate(
     ):
         weakened_by.append("packages named without a determinable role disagree")
 
+    # A symbol that is part of a path is that path again, not a second fact:
+    # `packages/loader/src/internal.ts` yields the path, the symbol
+    # `internal.ts` and the component `loader`, and counting all three let one
+    # mention of one file satisfy "a path plus something else". Independence is
+    # what the second class was for.
+    independent_struct = {
+        value for value in shared_struct if not any(value in path for path in shared_path)
+    }
+
     # --- rule 3: which combination of classes is enough to mean "same" -----
     rule: str | None = None
     related_packages = shared.get("related_packages") or []
@@ -519,7 +528,7 @@ def evaluate(
         # Same product, different package inside it: a real relation, but a
         # weaker one than naming the same package.
         rule = "related_package_plus_second_class"
-    elif shared_path and (shared_error or shared_struct or shared_behavior):
+    elif shared_path and (shared_error or independent_struct or shared_behavior):
         rule = "source_path_plus_second_class"
     elif shared_module and (shared_error or shared_struct or len(shared_behavior) >= 2):
         rule = "module_plus_second_class"
@@ -558,25 +567,32 @@ def evaluate(
     # says that *this* reporter has that problem. So identity has to rest on at
     # least one thing stated outside the quotation. Without that bridge the
     # report stops at retrieved_candidate, which is exactly what it is.
-    quoted_only = query.quoted_only
-    if quoted_only:
-        bridging = {
-            value
-            for name in IDENTITY_CLASSES
-            for value in shared.get(name, ())
-            if value not in quoted_only
-        }
-        if not bridging:
+    if query.unquoted is not None or candidate.unquoted is not None:
+        # Not "is there one shared value left outside the quotation" - a
+        # generic `TypeError`, or merely naming the same file, was enough to
+        # re-authorise a whole quoted ticket under that test. What is left when
+        # the quotations are removed has to identify the incident *by itself*,
+        # by the same rules, so the gate is simply run again on that view.
+        bare_query = query.unquoted or query
+        bare_candidate = candidate.unquoted or candidate
+        inner = evaluate(
+            bare_query,
+            bare_candidate,
+            doc_freq=doc_freq,
+            corpus_objects=corpus_objects,
+            package_family=family,
+        )
+        if not inner.accepted:
+            quoted_only = sorted(query.quoted_only | candidate.quoted_only)
             return IdentityVerdict(
                 accepted=False,
                 score=score,
                 rejection="quoted_evidence_only",
                 shared=shared,
                 reasons=[
-                    "everything this report and the candidate share "
-                    f"({sorted(quoted_only)[:3]}) appears only inside quoted material, so "
-                    "nothing the reporter states themselves identifies this as the same "
-                    "incident"
+                    f"without the quoted material ({quoted_only[:3]}) this no longer "
+                    f"identifies the same incident ({inner.rejection}), so the match rests "
+                    "on text the reporter is showing rather than stating"
                 ],
             )
 

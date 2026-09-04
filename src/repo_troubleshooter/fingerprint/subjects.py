@@ -44,7 +44,7 @@ from enum import StrEnum
 # Bumped whenever subject or behaviour extraction changes in a way that makes
 # already-mined signatures wrong. The value is stored alongside the mined rows;
 # a database holding an older version must be rebuilt before it may be used.
-FEATURE_EXTRACTOR_VERSION = 14
+FEATURE_EXTRACTOR_VERSION = 15
 
 # Directories every package has; a path tail led by one of these names nothing.
 GENERIC_PATH_DIRS = frozenset(
@@ -1156,6 +1156,40 @@ def _subject_is_a_package_token(clause: str) -> bool:
     return bool(rest) and _verb_shaped(rest[0])
 
 
+#: Prepositions. A package-kind noun behind one of these is an object, not the
+#: subject of the clause: `resolving a module`, `part of the library`.
+PREPOSITION_RE = re.compile(
+    r"^(?:of|in|on|to|for|with|from|by|at|into|about|as|via|through|within|under|over)$",
+    re.IGNORECASE,
+)
+
+
+def _subject_is_a_package_reference(clause: str) -> bool:
+    """Does this clause open with a noun phrase headed by a package-kind noun?
+
+    `The same package we use through the fallback ran cleanly`, `The package our
+    fallback imports ran cleanly` - zero-marker relative clauses, which English
+    writes without `that`, and which no participle or relative-pronoun test can
+    see. What is visible is that the clause's subject is a package: whatever it
+    goes on to say, it is predicating something *of that package*, so it is not
+    a wiring statement about something else and its claim may not be dropped.
+
+    Deliberately looser than `_subject_names_a_package_kind`, which needs a
+    predicate directly behind the noun. Here the intervening material is the
+    whole point, and being loose fails closed: the cost is a claim recorded, not
+    a claim ignored.
+    """
+    words = clause.split()
+    for index, word in enumerate(words[:-1]):
+        bare = word.strip(".,;:!?()[]\"'")
+        if not PACKAGE_NOUN_RE.fullmatch(bare):
+            continue
+        if index and PREPOSITION_RE.match(words[index - 1].strip(".,;:!?()[]\"'")):
+            continue
+        return True
+    return False
+
+
 def _subject_refers_back(clause: str) -> bool:
     """Does this clause's subject refer back to a package?
 
@@ -1172,7 +1206,10 @@ def _subject_refers_back(clause: str) -> bool:
         head = word.strip(".,;:!?()[]\"'")
         if ANAPHOR_WORD_RE.fullmatch(head) or PACKAGE_NOUN_RE.fullmatch(head):
             return True
-    return False
+    # A zero-marker relative clause puts its own subject and verb between the
+    # head noun and the predicate - `the package we rely on went green` - so no
+    # adjacency test can find the pair. The subject is still a package.
+    return _subject_is_a_package_reference(clause)
 
 
 def _subject_names_a_package_kind(clause: str) -> bool:
@@ -1209,6 +1246,13 @@ def _is_relation_statement(clause: str) -> bool:
     match = RELATION_STATEMENT_RE.search(head)
     if match is None:
         return False
+    # `The package our fallback imports ran cleanly`: the clause's subject is a
+    # package, so whatever follows is predicated of it. A wiring statement has
+    # some *other* subject - `the project`, `our application`, the package name
+    # itself - and never opens with `the package ...`.
+    if _subject_is_a_package_reference(head):
+        return False
+
     before, after = head[: match.start()], head[match.end() :]
 
     # `The package using our fallback ...`: a bare participle standing after a
@@ -1291,27 +1335,109 @@ class StateAssertion:
 
 
 FENCE_RE = re.compile(r"^[ \t]*(?:```|~~~).*$", re.MULTILINE)
+#: A quoted-reply line. Mail and every issue tracker mark quotation this way.
+BLOCKQUOTE_LINE_RE = re.compile(r"^[ \t]*>")
+#: An indented block. In Markdown this means "code", which is a statement about
+#: *form*, not about provenance - reporters indent their own stack traces
+#: constantly. Treating indentation alone as quotation cost three real
+#: incidents whose only evidence was an indented trace, so an indented block is
+#: quotation only when a label in front of it says whose material it is.
+INDENTED_LINE_RE = re.compile(r"^(?: {4}|\t)")
+
+#: A line that hands off what follows to somebody else. This is a small closed
+#: vocabulary, and the only one in the quotation model: a fence and a `>` are
+#: structural and need no words, but nothing in the *shape* of an indented block
+#: distinguishes `Archived documentation example only:` from `Here is its
+#: trace:`. Its limit is worth stating plainly - a report that marks provenance
+#: in words not listed here reads as the reporter's own, which is the
+#: conservative direction for recall and the permissive one for safety.
+PROVENANCE_LABEL_RE = re.compile(
+    r"(?:\b(?:quoted|copied|taken|reproduced|pasted)\s+from\b"
+    r"|\b(?:documentation|docs?|upstream|vendor|old|previous|earlier|another|unrelated"
+    r"|archived|retired|resolved|historical|legacy)\b[^:]{0,40}?"
+    r"\b(?:example|ticket|issue|thread|report|incident|discussion)\b"
+    r"|\bfor\s+(?:reference|comparison)\b"
+    r"|\bexample\s+only\b"
+    r"|\bnot\s+our\s+incident\b)",
+    re.IGNORECASE,
+)
+
+
+def _line_spans(text: str) -> list[tuple[int, int, str]]:
+    """(start, end, line) for every line, with offsets into ``text``."""
+    spans: list[tuple[int, int, str]] = []
+    position = 0
+    for line in text.splitlines(keepends=True):
+        stripped = line.rstrip("\r\n")
+        spans.append((position, position + len(stripped), stripped))
+        position += len(line)
+    return spans
+
+
+def _marked_line_spans(text: str) -> list[tuple[int, int]]:
+    """Runs of consecutive lines a report has marked as quoted.
+
+    `>` prefixes and four-space indentation are quotation the same way a fence
+    is, and reading them as the reporter's own words let
+
+        Copied from a resolved ticket, not our incident:
+        > <the whole symptom>
+
+    reach an actionable upgrade. Recognising only the fence was a boundary this
+    document had written down while the paths through it were still open.
+    """
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
+    end = 0
+    handed_off = False
+    for line_start, line_end, line in _line_spans(text):
+        if BLOCKQUOTE_LINE_RE.match(line):
+            quoted = True
+        elif INDENTED_LINE_RE.match(line):
+            # Indented: quotation only if something in front of it said so, or
+            # if we are already inside a run that was handed off.
+            quoted = handed_off
+        else:
+            quoted = False
+
+        if quoted:
+            if start is None:
+                start = line_start
+            end = line_end
+            continue
+
+        if start is not None and line.strip():
+            runs.append((start, end))
+            start = None
+        if line.strip():
+            handed_off = line.rstrip().endswith(":") and bool(PROVENANCE_LABEL_RE.search(line))
+    if start is not None:
+        runs.append((start, end))
+    return runs
 
 
 def quoted_spans(text: str) -> list[tuple[int, int]]:
-    """The regions a report has fenced off as quotation.
+    """The regions a report has marked as quotation rather than assertion.
 
-    A fenced block is material the reporter is showing, not asserting: a
-    documentation example, someone else's output, a snippet from a manual.
-    Nothing inside one says who is failing or what condition anything is in.
-    Reading fenced text as the reporter's own claim let a block introduced as
-    `Documentation example only:` make its package a primary subject, which
-    cancelled the conflict with the package the report actually blamed.
+    Quoted material is what the reporter is showing, not what they are saying:
+    a documentation example, someone else's output, a resolved ticket they are
+    comparing against. Nothing inside one says who is failing or what condition
+    anything is in.
 
     Mechanical strings - paths, symbols, error text - are still taken from
-    inside a fence. Those are not claims about authorship; a pasted trace
-    evidences what the machine printed whoever pasted it.
+    inside a quotation, because those are not claims about authorship. What
+    they may not do is establish identity on their own; the gate re-runs
+    identity on what is left when the quotations are removed.
     """
     marks = list(FENCE_RE.finditer(text))
     spans = [(marks[i].end(), marks[i + 1].start()) for i in range(0, len(marks) - 1, 2)]
     if len(marks) % 2:
         spans.append((marks[-1].end(), len(text)))
-    return spans
+    fenced = list(spans)
+    for start, end in _marked_line_spans(text):
+        if not any(f_start <= start < f_end for f_start, f_end in fenced):
+            spans.append((start, end))
+    return sorted(spans)
 
 
 def blank_quoted(text: str) -> str:

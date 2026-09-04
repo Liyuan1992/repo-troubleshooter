@@ -113,6 +113,7 @@ def store_features(
     rows = features.as_rows()
     if not rows:
         return 0, 0
+    quoted_only = features.quoted_only
     stmt = (
         pg_insert(SymptomSignature)
         .values(
@@ -123,6 +124,7 @@ def store_features(
                     "feature_kind": kind,
                     "feature_value": value[:300],
                     "derivation": "mined",
+                    "quoted": value in quoted_only,
                 }
                 for kind, value in rows
             ]
@@ -234,41 +236,57 @@ def _record_extractor_version(
     session.flush()
 
 
-def load_features(session: Session, object_id: int) -> SymptomFeatures:
-    """Read back one object's stored features."""
+_FEATURE_FIELD = {
+    "subject_package": "subject_packages",
+    "subject_path": "subject_paths",
+    "subject_dependency": "subject_dependencies",
+    "subject_confirmed_non_primary": "subject_confirmed_non_primary",
+    "subject_conflicted": "subject_conflicted",
+    "subject_unresolved": "subject_unresolved",
+    "subject_builtin": "subject_builtins",
+    "subject_module": "subject_modules",
+    "error": "error",
+    "structural": "structural",
+    "behavior": "behavior",
+    "component": "component",
+    "cause": "causes",
+}
+
+
+def _collect(rows: list[tuple[str, str, bool]], *, skip_quoted: bool) -> SymptomFeatures:
     features = SymptomFeatures()
-    rows = session.execute(
-        select(SymptomSignature.feature_kind, SymptomSignature.feature_value).where(
-            SymptomSignature.object_id == object_id
-        )
-    ).all()
-    for kind, value in rows:
-        if kind == "subject_package":
-            features.subject_packages.add(value)
-        elif kind == "subject_path":
-            features.subject_paths.add(value)
-        elif kind == "subject_dependency":
-            features.subject_dependencies.add(value)
-        elif kind == "subject_confirmed_non_primary":
-            features.subject_confirmed_non_primary.add(value)
-        elif kind == "subject_conflicted":
-            features.subject_conflicted.add(value)
-        elif kind == "subject_unresolved":
-            features.subject_unresolved.add(value)
-        elif kind == "subject_builtin":
-            features.subject_builtins.add(value)
-        elif kind == "subject_module":
-            features.subject_modules.add(value)
-        elif kind == "error":
-            features.error.add(value)
-        elif kind == "structural":
-            features.structural.add(value)
-        elif kind == "behavior":
-            features.behavior.add(value)
-        elif kind == "component":
-            features.component.add(value)
-        elif kind == "cause":
-            features.causes.add(value)
+    for kind, value, quoted in rows:
+        if skip_quoted and quoted:
+            continue
+        field_name = _FEATURE_FIELD.get(kind)
+        if field_name is not None:
+            getattr(features, field_name).add(value)
+    return features
+
+
+def load_features(session: Session, object_id: int) -> SymptomFeatures:
+    """Read back one object's stored features, quoted provenance included.
+
+    A candidate that is itself largely a quotation - an upstream thread whose
+    evidence sits inside a fence it pasted - must not identify a query on the
+    strength of what it quoted, the same way a query must not. That means the
+    flag has to survive storage, not just live in the process that mined it.
+    """
+    rows = [
+        (kind, value, bool(quoted))
+        for kind, value, quoted in session.execute(
+            select(
+                SymptomSignature.feature_kind,
+                SymptomSignature.feature_value,
+                SymptomSignature.quoted,
+            ).where(SymptomSignature.object_id == object_id)
+        ).all()
+    ]
+    features = _collect(rows, skip_quoted=False)
+    if any(quoted for _, _, quoted in rows):
+        unquoted = _collect(rows, skip_quoted=True)
+        features.quoted_only = feat.identity_values(features) - feat.identity_values(unquoted)
+        features.unquoted = unquoted
     return features
 
 

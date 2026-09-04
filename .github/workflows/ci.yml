@@ -69,6 +69,11 @@ jobs:
       - name: Database tests (migration replay, idempotence)
         run: uv run pytest -q -m "db and not live"
 
+      # `--help` and `--check` import the package and stop. They passed for
+      # several rounds while the wheel shipped no migrations at all and could
+      # not run a single command that touched the database, so the gate now
+      # makes the installed wheel do real work: build the schema from zero on a
+      # fresh database, and answer over stdio MCP.
       - name: Packaging smoke test
         run: |
           uv build
@@ -79,6 +84,16 @@ jobs:
           /tmp/wheelcheck/bin/repo-troubleshooter-mcp --help
           /tmp/wheelcheck/bin/repo-troubleshooter-mcp --check
 
+      - name: The installed wheel builds a schema from an empty database
+        env:
+          RT_DATABASE_URL: postgresql+psycopg://rt:rt@127.0.0.1:5432/rt_wheelcheck
+        run: |
+          psql "postgresql://rt:rt@127.0.0.1:5432/postgres" -c 'CREATE DATABASE rt_wheelcheck'
+          /tmp/wheelcheck/bin/repo-troubleshooter db init
+          /tmp/wheelcheck/bin/repo-troubleshooter db ping
+          /tmp/wheelcheck/bin/repo-troubleshooter status
+          /tmp/wheelcheck/bin/repo-troubleshooter-mcp --check
+
       # The `live` suite needs synced upstream data and a GitHub token, so it is
       # not part of the default run. Enable it deliberately, not by accident.
       - name: Live evaluation suite
@@ -87,5 +102,6 @@ jobs:
           RT_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           uv run repo-troubleshooter sync deepseek-harness --max-discussions 200
+          uv run repo-troubleshooter signatures deepseek-ai/deepseek-harness --rebuild
           uv run pytest -q -m live
           uv run python evals/runner.py

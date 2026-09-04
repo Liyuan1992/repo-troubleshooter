@@ -110,6 +110,8 @@ class TestAnInstalledWheelCanWork:
                 "--repo",
                 REPO,
                 "--json",
+                # Read-only: this gate runs against the tool's real database.
+                "--no-persist",
                 "--error",
                 REAL_SYMPTOM,
                 "--version",

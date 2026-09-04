@@ -89,7 +89,7 @@ def _cli_json(*args: str) -> dict[str, Any]:
 
 @pytest.fixture(scope="module", autouse=True)
 def _requires_synced_data(db_ready):  # noqa: ANN001
-    payload = _cli_json("diagnose", "--repo", REPO, "--json", "--error", "ping")
+    payload = _cli_json("diagnose", "--repo", REPO, "--json", "--no-persist", "--error", "ping")
     if payload["sync_health"] == "stale":
         pytest.skip("no synced data; run `rt sync deepseek-harness` first")
 
@@ -133,6 +133,8 @@ class TestContractParity:
             "--repo",
             REPO,
             "--json",
+            # Read-only, like the MCP side it is compared against.
+            "--no-persist",
             "--error",
             LOADER_ERROR,
             "--version",
@@ -173,6 +175,8 @@ class TestContractParity:
             "--repo",
             REPO,
             "--json",
+            # Read-only, like the MCP side it is compared against.
+            "--no-persist",
             "--error",
             UNRELATED_ERROR,
             "--version",

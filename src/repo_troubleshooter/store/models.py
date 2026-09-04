@@ -451,6 +451,13 @@ class SymptomSignature(Base):
     feature_value: Mapped[str] = mapped_column(String(300), nullable=False)
     # Which source text produced it: the thread body, a comment, a release note.
     derivation: Mapped[str] = mapped_column(String(32), default="mined", nullable=False)
+    # True when this value appears in the source text *only* inside quoted
+    # material - a fence, a `>` reply, an indented block. Such a value may find
+    # this candidate, but it cannot establish that a query is the same incident,
+    # and the check has to work on the candidate side too: an upstream thread
+    # that is itself mostly a quotation must not identify anything on the
+    # strength of what it quoted.
+    quoted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     observed_at = _utcnow_col()
 
     __table_args__ = (

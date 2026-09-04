@@ -360,6 +360,12 @@ class SymptomFeatures:
     # read and thrown away.
     quoted_packages: set[str] = field(default_factory=set)
     quoted_claims: list[dict[str, Any]] = field(default_factory=list)
+    # The same report with its quotations removed, when it has any. The gate
+    # runs identity against this as well: quoted strings may find a candidate,
+    # but what the reporter states themselves has to identify the incident.
+    # `None` means there was nothing quoted, so this view would be the same
+    # object.
+    unquoted: SymptomFeatures | None = field(default=None, repr=False, compare=False)
     # The spans and cues behind the roles above, for the reproduction trace.
     package_mentions: list[dict[str, Any]] = field(default_factory=list)
     # Condition claims this report makes that could not be attached to anything:
@@ -418,6 +424,11 @@ class SymptomFeatures:
             "unresolved_state_assertions": self.unresolved_state_assertions,
             "uninterpreted_state_assertions": self.uninterpreted_state_assertions,
             "pointed_unread_assertions": self.pointed_unread_assertions,
+            # Where quotation was found and what was set aside inside it, so a
+            # `--debug` trace shows the provenance the gate acted on.
+            "quoted_only": sorted(self.quoted_only),
+            "quoted_packages": sorted(self.quoted_packages),
+            "quoted_claims": self.quoted_claims,
             "subject_paths": sorted(self.subject_paths),
             "subject_builtins": sorted(self.subject_builtins),
             "subject_modules": sorted(self.subject_modules),
@@ -501,7 +512,23 @@ def extract(text: str | None, *, known_modules: frozenset[str] = frozenset()) ->
     error = {m.lower() for m in EXCEPTION_RE.findall(signature)}
     error |= {m.lower() for m in ERROR_CODE_RE.findall(signature)}
 
-    subjects = classify(signature, known_modules)
+    # Quotation is found on the text as written. `normalize` collapses runs of
+    # whitespace, so an indented block - four spaces, the oldest way of marking
+    # a quotation there is - stopped being one before anything looked for it.
+    spans = subjects_mod.quoted_spans(text)
+    stated = normalize(subjects_mod.blank_quoted(text)) if spans else signature
+
+    # Roles and condition claims come only from what the reporter states.
+    # Paths, modules and builtins come from the whole text: those are strings a
+    # machine printed, and a quoted trace still evidences them - what they may
+    # not do is identify the incident on their own, which the gate enforces by
+    # re-running itself on the stated view.
+    subjects = classify(stated, known_modules)
+    if spans:
+        mechanical = classify(signature, known_modules)
+        subjects.paths = mechanical.paths
+        subjects.modules = mechanical.modules
+        subjects.builtins = mechanical.builtins
 
     structural: set[str] = set()
     structural |= {m.lower() for m in DUNDER_RE.findall(signature)}
@@ -530,7 +557,7 @@ def extract(text: str | None, *, known_modules: frozenset[str] = frozenset()) ->
         component=component_features(signature),
         causes=detect_causes(signature),
     )
-    _record_quotation(features, signature, known_modules)
+    _record_quotation(features, text, known_modules)
     return features
 
 
@@ -546,24 +573,22 @@ def identity_values(features: SymptomFeatures) -> set[str]:
     )
 
 
-def _record_quotation(
-    features: SymptomFeatures, signature: str, known_modules: frozenset[str]
-) -> None:
+def _record_quotation(features: SymptomFeatures, text: str, known_modules: frozenset[str]) -> None:
     """Split this report's evidence into what it states and what it quotes.
 
-    Fenced material is kept, not deleted: its packages and claims are recorded
-    as quoted, and the identity values it is the *only* source of are marked so
-    the gate can decline to act on them alone.
+    Quoted material is kept, not deleted: its packages and claims are recorded
+    as quoted, and the identity values it is the *only* source of are marked, so
+    the gate can decline to act on them and a trace shows why.
     """
-    spans = subjects_mod.quoted_spans(signature)
+    spans = subjects_mod.quoted_spans(text)
     if not spans:
         return
-    without = subjects_mod.blank_quoted(signature)
-    if without != signature:
-        features.quoted_only = identity_values(features) - identity_values(
-            extract(without, known_modules=known_modules)
-        )
-    inside = "\n".join(signature[start:end] for start, end in spans)
+    without = subjects_mod.blank_quoted(text)
+    if without != text:
+        unquoted = extract(without, known_modules=known_modules)
+        features.quoted_only = identity_values(features) - identity_values(unquoted)
+        features.unquoted = unquoted
+    inside = normalize("\n".join(text[start:end] for start, end in spans))
     quoted = classify(inside, known_modules)
     features.quoted_packages = set(quoted.all_packages)
     features.quoted_claims = [a.to_json() for a in quoted.state_assertions]

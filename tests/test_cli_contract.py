@@ -57,7 +57,8 @@ def run_cli(*args: str, timeout: int = 300) -> subprocess.CompletedProcess[str]:
 
 
 def diagnose_json(*extra: str) -> dict:
-    result = run_cli("diagnose", "--repo", REPO, "--json", *extra)
+    # Read-only: the suite runs against the tool's real database.
+    result = run_cli("diagnose", "--repo", REPO, "--json", "--no-persist", *extra)
     assert result.returncode == 0, f"exit {result.returncode}\n{result.stdout}\n{result.stderr}"
     return json.loads(result.stdout)
 

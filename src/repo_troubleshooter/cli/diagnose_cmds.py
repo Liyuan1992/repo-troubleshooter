@@ -134,6 +134,13 @@ def register(
         debug: Annotated[
             bool, typer.Option("--debug", help="Include the reproduction trace")
         ] = False,
+        no_persist: Annotated[
+            bool,
+            typer.Option(
+                "--no-persist",
+                help="Answer without recording anything: no incident record, no containment cache",
+            ),
+        ] = False,
     ) -> None:
         """Diagnose one problem against synced evidence. Deterministic; no model key needed."""
         require_schema()
@@ -167,7 +174,7 @@ def register(
 
         try:
             with db.session_scope() as session:
-                response, _packet, trace = run_diagnosis(request, session)
+                response, _packet, trace = run_diagnosis(request, session, persist=not no_persist)
         except SignaturesStale as exc:
             fail("symptom signatures are stale or missing\n" + str(exc))
 

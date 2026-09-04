@@ -230,7 +230,21 @@ def cli_diagnose(error: str, *, version: str = "0.1.2-alpha.1", debug: bool = Fa
         if executable.exists()
         else [sys.executable, "-m", "repo_troubleshooter.cli.main"]
     )
-    argv += ["diagnose", "--repo", REPO, "--json", "--error", error, "--version", version]
+    # `--no-persist` because this suite reads the tool's real database: a
+    # diagnosis that records an incident or refreshes the containment cache
+    # changes the data every later test - and every measurement in the status
+    # document - is taken from.
+    argv += [
+        "diagnose",
+        "--repo",
+        REPO,
+        "--json",
+        "--no-persist",
+        "--error",
+        error,
+        "--version",
+        version,
+    ]
     if debug:
         argv.append("--debug")
     proc = subprocess.run(  # noqa: S603
@@ -690,6 +704,17 @@ class TestElevenPhrasingsThroughBothSurfaces:
         "Quoted from a retired vendor ticket:\n"
         "```text\n@deepseek-ai/dsh-client-modules is healthy. {boot}\n```",
         "Documentation example only:\n```text\n{boot}\n```",
+        # A `>` reply and a labelled indented block are quotation the same
+        # way a fence is. Recognising only the fence left both upgrading.
+        "Copied from a resolved ticket, not our incident:\n> {boot}",
+        "Archived documentation example only:\n    {boot}",
+        # And one value outside the quotation used to re-authorise
+        # everything inside it - a generic exception type, or naming the
+        # same file. The gate re-runs itself on the stated view now.
+        "Our unrelated color preview throws TypeError.\n"
+        "For comparison, an old ticket says:\n```text\n{boot}\n```",
+        "Our documentation links to packages/loader/src/internal.ts.\n"
+        "An unrelated old incident follows:\n```text\n{boot}\n```",
     )
 
     @pytest.mark.parametrize("template", QUOTED_REPORTS)
@@ -707,8 +732,14 @@ class TestElevenPhrasingsThroughBothSurfaces:
         assert payload["recommended_action"]["type"] not in UNSAFE
         assert payload["stages"]["stopped_at"] == "retrieved_candidate"
 
-    def test_a_report_that_quotes_its_own_trace_still_upgrades(self):
-        """The staging must not cost a real report that fences its stack trace."""
+    def test_a_quotation_alongside_a_stated_report_costs_nothing(self):
+        """The presence of a quotation does not by itself cost a positive.
+
+        This used to be named as though it showed a report may fence its own
+        trace. It does not: the evidence here is all in the prose and the fence
+        holds an unrelated snippet. The case that name described is below, and
+        it abstains.
+        """
         real = (
             "dsh web starts but __DSH_BOOT__ has zero entries and zero batches; "
             "client-modules reports HTML did not preload "
@@ -719,6 +750,26 @@ class TestElevenPhrasingsThroughBothSurfaces:
         payload = cli_diagnose(report)
         assert payload["incident"]["matched"] is True
         assert payload["recommended_action"]["target"] == "dsh-v0.1.2-alpha.2"
+
+    def test_a_report_whose_only_evidence_is_fenced_abstains(self):
+        """A documented recall gap, asserted rather than described.
+
+        When the identifying evidence sits *only* inside the fence, nothing
+        distinguishes this report from one quoting somebody else's ticket, and
+        the staging abstains. That is a real loss, and it is the conservative
+        direction. The same trace under a neutral introduction, indented rather
+        than fenced, still upgrades - indentation without a provenance label is
+        code, not quotation.
+        """
+        trace = "packages/loader/src/internal.ts throws TypeError: e.indexOf is not a function"
+        prose = "My current dsh web boot graph is empty and client modules never preload."
+
+        fenced = cli_diagnose(f"{prose}\nHere is its trace:\n```text\n{trace}\n```")
+        assert fenced["recommended_action"]["type"] not in UNSAFE
+        assert fenced["stages"]["stopped_at"] == "retrieved_candidate"
+
+        indented = cli_diagnose(f"{prose}\nHere is its trace:\n    {trace}")
+        assert indented["recommended_action"]["target"] == "dsh-v0.1.2-alpha.2"
 
     def test_wiring_still_reads_as_wiring_when_it_is_progressive(self):
         """`We are using @x` is a relation statement; the auxiliary is part of it."""

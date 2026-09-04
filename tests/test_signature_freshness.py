@@ -52,20 +52,55 @@ class TestStaleIsRefused:
     """Every path that can answer a question must refuse a stale corpus."""
 
     @pytest.fixture
-    def stamped_old(self, session, synced_repo):  # noqa: ANN001, ANN201
-        """Temporarily rewind the stored extractor version, then restore it."""
-        state = session.scalar(
-            select(SyncState).where(
-                SyncState.repo_id == synced_repo.id, SyncState.source == "signatures"
+    def stamped_old(self, session):  # noqa: ANN001, ANN201
+        """A repository of this test's own, stamped with a superseded extractor.
+
+        The first version of this fixture rewound the *synced* repository and
+        committed, so for the length of the test the tool's real corpus was
+        stale: a CLI or MCP call running alongside would have been refused, and
+        a killed test process would have left it that way. No outer rollback can
+        undo a commit that has already happened, so the answer is not to restore
+        afterwards but to never write there.
+        """
+        from repo_troubleshooter.store.models import Repository, SourceObject, SymptomSignature
+
+        name = f"stale-{uuid.uuid4().hex[:8]}"
+        repo = Repository(owner="rt-test", name=name, full_name=f"rt-test/{name}")
+        session.add(repo)
+        session.flush()
+        obj = SourceObject(
+            repo_id=repo.id,
+            kind="discussion",
+            native_id=f"rt-test-{name}",
+            url=f"https://example.invalid/{name}",
+            title="stale fixture",
+        )
+        session.add(obj)
+        session.flush()
+        session.add(
+            SymptomSignature(
+                repo_id=repo.id,
+                object_id=obj.id,
+                feature_kind="structural",
+                feature_value="__dsh_boot__",
+                derivation="mined",
             )
         )
-        assert state is not None
-        original = dict(state.stats or {})
-        state.stats = {**original, "extractor_version": FEATURE_EXTRACTOR_VERSION - 1}
+        session.add(
+            SyncState(
+                repo_id=repo.id,
+                source="signatures",
+                status="complete",
+                objects_seen=1,
+                stats={"extractor_version": FEATURE_EXTRACTOR_VERSION - 1},
+            )
+        )
         session.commit()
-        yield synced_repo
-        state.stats = original
-        session.commit()
+        try:
+            yield repo
+        finally:
+            session.delete(repo)
+            session.commit()
 
     def test_state_reports_it(self, session, stamped_old):
         state = signature_state(session, stamped_old)
@@ -77,11 +112,11 @@ class TestStaleIsRefused:
             require_fresh_signatures(session, stamped_old)
         message = str(excinfo.value)
         assert "--rebuild" in message
-        assert REPO in message
+        assert stamped_old.full_name in message
 
     def test_diagnosis_refuses_rather_than_answering(self, session, stamped_old):
         request = DiagnosisRequest(
-            repo=REPO,
+            repo=stamped_old.full_name,
             error="__DSH_BOOT__ has zero entries and client-modules did not preload",
             core_version="0.1.2-alpha.1",
         )
@@ -96,7 +131,7 @@ class TestStaleIsRefused:
             else [sys.executable, "-m", "repo_troubleshooter.cli.main"]
         )
         proc = subprocess.run(  # noqa: S603
-            [*argv, "diagnose", "--repo", REPO, "--json", "--error", "anything"],
+            [*argv, "diagnose", "--repo", stamped_old.full_name, "--json", "--error", "anything"],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -120,7 +155,12 @@ class TestStaleIsRefused:
         async def run():  # noqa: ANN202
             async with Client(server) as client:
                 result = await client.call_tool(
-                    "diagnose", {"repo": REPO, "error": "anything", "core_version": "0.1.2-alpha.1"}
+                    "diagnose",
+                    {
+                        "repo": stamped_old.full_name,
+                        "error": "anything",
+                        "core_version": "0.1.2-alpha.1",
+                    },
                 )
                 payload = result.structured_content
                 if payload is None:

@@ -64,12 +64,23 @@ GUARDED_TABLES = (
 
 
 def _database_snapshot() -> dict[str, object]:
-    """Row counts, plus every field of `sync_state` that a build writes."""
+    """A content digest per table, plus every `sync_state` field a build writes.
+
+    Row counts alone missed an update that changed a value in place, and a
+    delete paired with an insert. The digest is over the rows themselves, so
+    any of those shows up.
+    """
     from sqlalchemy import text
 
     with session_scope() as sess:
         counts = {
-            table: sess.execute(text(f"SELECT count(*) FROM {table}")).scalar()  # noqa: S608
+            table: sess.execute(
+                text(  # noqa: S608 - GUARDED_TABLES is a module constant
+                    "SELECT count(*),"
+                    " md5(coalesce(string_agg(t::text, '|' ORDER BY t::text), ''))"
+                    f" FROM {table} t"
+                )
+            ).one()
             for table in GUARDED_TABLES
         }
         rows = sess.execute(
@@ -79,7 +90,7 @@ def _database_snapshot() -> dict[str, object]:
                 "  FROM sync_state ORDER BY repo_id, source"
             )
         ).all()
-    return {"counts": counts, "sync_state": [tuple(map(str, row)) for row in rows]}
+    return {"digests": counts, "sync_state": [tuple(map(str, row)) for row in rows]}
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -98,12 +109,21 @@ def database_is_read_only(request):  # noqa: ANN001, ANN201
     before = _database_snapshot()
     yield None
     after = _database_snapshot()
-    changed = [key for key in before if before[key] != after[key]]
-    if changed:
-        details = "\n".join(
-            f"  {key}:\n    before {before[key]}\n    after  {after[key]}" for key in changed
-        )
-        raise AssertionError(f"the test run modified the synced database:\n{details}")
+    lines: list[str] = []
+    for key, first in before.items():
+        second = after[key]
+        if first == second:
+            continue
+        if isinstance(first, dict) and isinstance(second, dict):
+            lines += [
+                f"  {key}.{name}: before {first[name]} after {second.get(name)}"
+                for name in first
+                if first[name] != second.get(name)
+            ]
+        else:
+            lines.append(f"  {key}:\n    before {first}\n    after  {second}")
+    if lines:
+        raise AssertionError("the test run modified the synced database:\n" + "\n".join(lines))
 
 
 @pytest.fixture()

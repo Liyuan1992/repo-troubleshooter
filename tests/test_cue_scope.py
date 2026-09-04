@@ -69,7 +69,8 @@ def cli_diagnose(error: str, *, version: str = "0.1.2-alpha.1", debug: bool = Fa
         if executable.exists()
         else [sys.executable, "-m", "repo_troubleshooter.cli.main"]
     )
-    argv += ["diagnose", "--repo", REPO, "--json", "--error", error, "--version", version]
+    argv += ["diagnose", "--repo", REPO, "--json", "--no-persist"]
+    argv += ["--error", error, "--version", version]
     if debug:
         argv.append("--debug")
     proc = subprocess.run(  # noqa: S603
