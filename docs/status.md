@@ -420,16 +420,16 @@ each checked by exit code rather than by reading the tail of the output.
 
 **External CI has now run.** The repository was pushed to
 `Liyuan1992/repo-troubleshooter` and the workflow executed on GitHub's runners:
-run [33863041642](https://github.com/Liyuan1992/repo-troubleshooter/actions/runs/33863041642), commit `45c7511`, conclusion **success** in 1m16s.
+run [33929933878](https://github.com/Liyuan1992/repo-troubleshooter/actions/runs/33929933878), commit `c8dabeb`, conclusion **success** in 1m06s.
 Every step passed on a machine that is not this one - lint, format, strict
 mypy, unit tests, a migration from an empty database, the database tests, the
 packaging smoke test, and the installed wheel building a schema from an empty
 database against the job's own PostgreSQL service.
 
-That run predates the workspace-context, vLLM connector and second-repository
-census changes described below. Their local verification is recorded here;
-external CI evidence must be tied to the exact delivered commit and run rather
-than inferred from this older result.
+That run contains the workspace-context collector, vLLM Issue/PR connector,
+extractor-16 migration and both holdout implementations described below. The
+live census results remain local evidence because that optional job step was
+not enabled.
 
 **What that run did not cover.** The `Live evaluation suite` step was **skipped**,
 as designed: it is gated on `vars.RUN_LIVE_EVALS`, which is unset. So the live
