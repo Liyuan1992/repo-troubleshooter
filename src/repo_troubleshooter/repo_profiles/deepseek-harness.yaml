@@ -36,6 +36,23 @@ environment:
   - node_version
   - os
 
+local_context:
+  core_packages:
+    - "@deepseek-ai/dsh"
+    - "@deepseek-ai/dsh-root"
+  runtimes:
+    - node
+
+holdout:
+  report_kinds:
+    - discussion
+  assumed_version: 0.1.2-alpha.1
+  positive_control_error: >
+    dsh web starts but __DSH_BOOT__ has zero entries and zero batches;
+    client-modules reports HTML did not preload
+    @deepseek-ai/dsh-client-modules/client.js, and the host throws
+    TypeError: e.indexOf is not a function
+
 notes: >
   TypeScript monorepo (apps/, packages/, native/, python/). Release notes are
   bilingual with a "Full Changelog" compare link, which is the highest-value

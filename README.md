@@ -2,8 +2,7 @@
 
 English | [简体中文](README.zh-CN.md)
 
-Turn an error report, version, and runtime environment into a troubleshooting proposal
-backed by real repository evidence.
+Turn an error report into a troubleshooting proposal backed by real repository evidence.
 
 Repository Troubleshooter searches discussions, releases, commit history, and documentation
 to answer:
@@ -18,9 +17,11 @@ to answer:
 ```text
 Input
   report:   client boot graph is empty after startup
+
+Detected from the workspace
   version:  0.1.2-alpha.1
   runtime:  Node.js 24.11.1 on Windows
-  package:  @deepseek-ai/dsh-client-modules
+  packages: @deepseek-ai/dsh
 
 Output
   incident: known loader incident
@@ -60,14 +61,25 @@ completeness.
 
 ## Diagnose a report
 
-Save the report as `report.txt`, then run:
+Save the report as `report.txt`. From this checkout, point the command at the user's project:
 
 ```bash
-uv run rt diagnose --repo deepseek-ai/deepseek-harness --error-file report.txt --version 0.1.2-alpha.1 --runtime "node 24.11.1" --os windows --package @deepseek-ai/dsh-client-modules
+uv run rt diagnose --workspace /path/to/project --error-file report.txt
 ```
 
-`--package` identifies the component the user believes is failing. It may be repeated. If the
-failing package is unknown, omit it and review the proposal and evidence before confirming.
+When `rt` is installed on `PATH`, run it directly inside the project instead:
+
+```bash
+cd /path/to/project
+rt diagnose --error-file report.txt
+```
+
+The CLI detects the evidence repository, installed product version, runtime, operating system,
+and related packages from the local workspace. It shows every value and its source before asking
+for confirmation. Detected dependencies are never silently treated as the failing component.
+
+`--repo`, `--version`, `--runtime`, `--os`, and `--package` remain available as overrides for
+remote reports, containers, and ambiguous workspaces.
 
 Use `--json` for machine-readable output and `--debug` to inspect the candidate and decision
 trace. Run `uv run rt diagnose --help` for the complete interface.
@@ -83,10 +95,13 @@ uv run repo-troubleshooter-mcp
 
 ## Current status
 
-The first repository validated with real data is
-[`deepseek-ai/deepseek-harness`](https://github.com/deepseek-ai/deepseek-harness). The CLI and
-MCP interfaces are available now. The tool produces recommendations and evidence but does not
-modify the user's project. Validation on a second repository is still in progress.
+Two structurally different repository evidence paths work with real data:
+[`deepseek-ai/deepseek-harness`](https://github.com/deepseek-ai/deepseek-harness) through
+Discussions, and [`vllm-project/vllm`](https://github.com/vllm-project/vllm) through an
+Issue → pull request → commit → release chain. The CLI and MCP interfaces are available now.
+A real-report census also shows that free-text proposals can point at the wrong incident, so
+the echoed evidence and confirmation step are required. The tool does not modify the user's
+project.
 
 ## Documentation
 

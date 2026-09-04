@@ -55,6 +55,9 @@ DUNDER_RE = re.compile(r"\b(__[A-Z][A-Z0-9_]*__)\b")
 DOTTED_RE = re.compile(r"\b([a-zA-Z_$][\w$]*(?:\.[a-zA-Z_$][\w$]*)+)\b")
 CAMEL_RE = re.compile(r"\b([a-z]+(?:[A-Z][a-z0-9]+)+)\b")
 HYPHEN_MODULE_RE = re.compile(r"\b([a-z][a-z0-9]*(?:-[a-z0-9]+){1,4})\b")
+# HTTP/API routes are structural names too. `/metrics` distinguishes an
+# endpoint regression even when there is no exception type or source path.
+HTTP_ROUTE_RE = re.compile(r"(?<!\w)(/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_@.:-]+)*)\b")
 FRAME_RE = re.compile(r"^\s*at\s+([\w$.<>]+)", re.MULTILINE)
 FILE_RE = re.compile(r"\b([\w.-]+\.(?:ts|tsx|js|mjs|cjs|py|json|yaml|yml|toml))\b")
 VERSIONISH_RE = re.compile(r"\b\d+\.\d+(?:\.\d+)?(?:[-.][\w.]+)?\b")
@@ -279,6 +282,7 @@ def fingerprint(raw_error: str | None, *, extra_context: str | None = None) -> E
     symbols += DOTTED_RE.findall(signature)
     symbols += CAMEL_RE.findall(signature)
     symbols += HYPHEN_MODULE_RE.findall(signature)
+    symbols += HTTP_ROUTE_RE.findall(signature)
     symbols_t = _dedupe([s for s in symbols if s and not s.isdigit()])
 
     candidates: list[str] = [

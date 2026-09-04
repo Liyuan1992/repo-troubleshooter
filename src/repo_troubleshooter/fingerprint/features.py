@@ -45,6 +45,7 @@ from repo_troubleshooter.fingerprint.error import (
     DUNDER_RE,
     ERROR_CODE_RE,
     EXCEPTION_RE,
+    HTTP_ROUTE_RE,
     normalize,
 )
 from repo_troubleshooter.fingerprint.subjects import classify
@@ -534,6 +535,7 @@ def extract(text: str | None, *, known_modules: frozenset[str] = frozenset()) ->
     structural |= {m.lower() for m in DUNDER_RE.findall(signature)}
     structural |= {m.lower() for m in DOTTED_RE.findall(signature) if "." in m}
     structural |= {m.lower() for m in CAMEL_RE.findall(signature) if len(m) >= 6}
+    structural |= {m.lower() for m in HTTP_ROUTE_RE.findall(signature)}
     structural -= error
     # A symbol is not a subject: `e.indexOf` belongs to whoever called it.
     structural -= subjects.all

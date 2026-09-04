@@ -114,4 +114,9 @@ jobs:
           # numbers are a regression signal for this job alone - they are not
           # comparable with the ones in docs/threat_model.md and must not be
           # quoted as them.
-          uv run python evals/holdout.py --sample 60 --out holdout_ci.json
+          uv run python evals/holdout.py --repo deepseek-ai/deepseek-harness --sample 60 --out holdout_ci.json
+          # The second repository uses Issues/PRs and report-template versions.
+          # This is deliberately a small CI regression corpus, not the documented
+          # 1,001-Issue bounded-corpus census.
+          uv run repo-troubleshooter sync vllm --max-discussions 1 --max-issues 200 --max-pull-requests 200 --no-docs
+          uv run python evals/holdout.py --repo vllm-project/vllm --sample 60 --workers 4 --out holdout_vllm_ci.json

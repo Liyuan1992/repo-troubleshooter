@@ -11,6 +11,7 @@ re-verify later.
 from __future__ import annotations
 
 import datetime as dt
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -85,7 +86,13 @@ class GitRepo:
 
     # --- process plumbing -------------------------------------------------
 
-    def _run(self, argv: list[str], check: bool = True, cwd: Path | None = None) -> GitResult:
+    def _run(
+        self,
+        argv: list[str],
+        check: bool = True,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+    ) -> GitResult:
         proc = subprocess.run(  # noqa: S603 - fixed executable, argv list, no shell
             [self._git, *argv],
             cwd=str(cwd or self.path),
@@ -94,6 +101,7 @@ class GitRepo:
             encoding="utf-8",
             errors="replace",
             check=False,
+            env=env,
         )
         result = GitResult(argv, proc.returncode, proc.stdout, proc.stderr)
         if check and proc.returncode != 0:
@@ -116,7 +124,12 @@ class GitRepo:
         if not (path / "HEAD").exists():
             path.parent.mkdir(parents=True, exist_ok=True)
             proc = subprocess.run(  # noqa: S603
-                [git, "clone", "--mirror", clone_url, str(path)],
+                # Blobless mirrors retain the complete commit/tag graph needed
+                # for ancestry and release containment, while avoiding an
+                # up-front download of every historical model fixture or image.
+                # `show_blob` transparently fetches a blob later when versioned
+                # docs actually need it.
+                [git, "clone", "--mirror", "--filter=blob:none", clone_url, str(path)],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -154,7 +167,11 @@ class GitRepo:
     def commit_info(self, sha: str) -> CommitInfo | None:
         fmt = self._FS.join(["%H", "%h", "%s", "%an", "%aI", "%cI", "%P", "%b"])
         result = self._run(
-            ["show", "--no-patch", f"--format={fmt}", f"{sha}^{{commit}}"], check=False
+            ["show", "--no-patch", f"--format={fmt}", f"{sha}^{{commit}}"],
+            check=False,
+            # A hex token copied from a log may resemble an unreachable commit.
+            # Partial clones otherwise contact the network for every such token.
+            env={**os.environ, "GIT_NO_LAZY_FETCH": "1"},
         )
         if result.returncode != 0 or not result.stdout.strip():
             return None

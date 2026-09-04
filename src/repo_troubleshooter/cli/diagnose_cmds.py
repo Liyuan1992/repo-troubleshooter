@@ -24,14 +24,27 @@ from repo_troubleshooter.sync.upsert import get_repository
 
 def render(response: DiagnosisResponse, console: Console, trace: Any = None) -> None:
     env = response.environment
+    sources = env.get("context_sources") or {}
     console.print()
     console.print("[bold]Detected[/bold]")
-    detected = Table("field", "value", show_header=False)
-    detected.add_row("Repository", str(env.get("repo")))
-    detected.add_row("Core version", str(env.get("core_version") or "-"))
-    detected.add_row("Runtime", str(env.get("runtime") or "-"))
-    detected.add_row("OS", str(env.get("os") or "-"))
+    detected = Table("field", "value", "source")
+    detected.add_row("Repository", str(env.get("repo")), str(sources.get("repo") or "request"))
+    detected.add_row(
+        "Core version",
+        str(env.get("core_version") or "-"),
+        str(sources.get("core_version") or "-"),
+    )
+    detected.add_row("Runtime", str(env.get("runtime") or "-"), str(sources.get("runtime") or "-"))
+    detected.add_row("OS", str(env.get("os") or "-"), str(sources.get("os") or "-"))
+    if env.get("detected_packages"):
+        detected.add_row(
+            "Related packages",
+            ", ".join(str(value) for value in env["detected_packages"]),
+            "workspace manifests; not assumed failing",
+        )
     console.print(detected)
+    for warning in env.get("context_warnings") or []:
+        console.print(f"  [yellow]context:[/yellow] {warning}")
 
     console.print()
     console.print(f"[bold]Status[/bold]  {response.status}")
@@ -129,6 +142,7 @@ def _render_understanding(console: Any, understood: Any) -> None:
     console.print("\n  [bold]what I read in your report[/bold]")
     rows = (
         ("you stated these packages", understood.packages_stated),
+        ("found in your workspace, not assumed failing", understood.workspace_packages),
         ("read as failing", understood.failing),
         ("read as used", understood.used),
         ("read as cleared", understood.cleared),
@@ -150,7 +164,12 @@ def _render_understanding(console: Any, understood: Any) -> None:
         ("os", understood.os),
     ):
         if value:
-            console.print(f"    {label}: {value}")
+            source_key = "core_version" if label == "version" else label
+            source = understood.context_sources.get(source_key)
+            suffix = f" (source: {source})" if source else ""
+            console.print(f"    {label}: {value}{suffix}")
+    for warning in understood.context_warnings:
+        console.print(f"    context warning: {warning}")
 
     if understood.proposed_action:
         target = f" -> {understood.proposed_target}" if understood.proposed_target else ""
@@ -166,7 +185,10 @@ def register(
 ) -> None:
     @app.command("diagnose")
     def diagnose_cmd(
-        repo: Annotated[str, typer.Option("--repo", help="owner/name")],
+        repo: Annotated[
+            str | None,
+            typer.Option("--repo", help="Evidence repository owner/name; detected when omitted"),
+        ] = None,
         error: Annotated[
             str | None, typer.Option("--error", help="Exact error text or symptom")
         ] = None,
@@ -181,6 +203,20 @@ def register(
             str | None, typer.Option("--runtime", help='e.g. "node 24.11.1"')
         ] = None,
         os_name: Annotated[str | None, typer.Option("--os", help="windows | linux | macos")] = None,
+        workspace: Annotated[
+            Path | None,
+            typer.Option(
+                "--workspace",
+                help="Project directory to inspect; defaults to the current directory",
+            ),
+        ] = None,
+        no_detect: Annotated[
+            bool,
+            typer.Option(
+                "--no-detect",
+                help="Do not inspect workspace manifests, runtime, OS, or git remote",
+            ),
+        ] = False,
         plugin: Annotated[
             list[str] | None, typer.Option("--plugin", help="name@version, repeatable")
         ] = None,
@@ -192,8 +228,8 @@ def register(
             typer.Option(
                 "--package",
                 help=(
-                    "A package you are running, by name. Repeatable. "
-                    "Free text finds candidates; this is what authorises advice."
+                    "Override the inferred failing package, by name. Repeatable. "
+                    "Detected dependencies are only context; this explicitly authorises advice."
                 ),
             ),
         ] = None,
@@ -228,34 +264,86 @@ def register(
         from repo_troubleshooter.diagnosis.contract import DiagnosisRequest, PluginSpec
         from repo_troubleshooter.diagnosis.engine import diagnose as run_diagnosis
 
+        workspace_path = (workspace or Path.cwd()).expanduser()
+        if not no_detect and not workspace_path.exists():
+            fail(f"workspace not found: {workspace_path}")
         error_text = error
         if error_file:
-            if not error_file.exists():
+            resolved_error_file = error_file
+            if not resolved_error_file.exists() and not error_file.is_absolute():
+                resolved_error_file = workspace_path / error_file
+            if not resolved_error_file.exists():
                 fail(f"error file not found: {error_file}")
-            error_text = error_file.read_text(encoding="utf-8", errors="replace")
+            error_text = resolved_error_file.read_text(encoding="utf-8", errors="replace")
 
         plugins = []
         for spec in plugin or []:
             name, _, version = spec.partition("@")
             plugins.append(PluginSpec(name=name, version=version or None))
 
-        request = DiagnosisRequest(
-            repo=repo,
-            error=error_text,
-            question=question,
-            core_version=core_version,
-            runtime=runtime,
-            os=os_name,
-            plugins=plugins,
-            config_keys=list(config_key or []),
-            packages=list(package or []),
-            confirm=confirm,
-        )
-
         from repo_troubleshooter.relations.signatures import SignaturesStale
+        from repo_troubleshooter.workspace import build_catalog, inspect_workspace, resolve_context
 
         try:
             with db.session_scope() as session:
+                if no_detect:
+                    if not repo:
+                        fail("--repo is required when --no-detect is used")
+                    sources = {
+                        key: source
+                        for key, value, source in (
+                            ("repo", repo, "--repo"),
+                            ("core_version", core_version, "--version"),
+                            ("runtime", runtime, "--runtime"),
+                            ("os", os_name, "--os"),
+                        )
+                        if value
+                    }
+                    detected_repo = repo
+                    detected_version = core_version
+                    detected_runtime = runtime
+                    detected_os = os_name
+                    detected_packages: list[str] = []
+                    context_warnings: list[str] = []
+                else:
+                    snapshot = inspect_workspace(workspace_path)
+                    local = resolve_context(
+                        snapshot,
+                        build_catalog(session),
+                        repo=repo,
+                        core_version=core_version,
+                        runtime=runtime,
+                        os_name=os_name,
+                    )
+                    if local.repo is None:
+                        detail = f"\n  context: {local.warnings[0]}" if local.warnings else ""
+                        fail(
+                            "could not determine the evidence repository from this workspace; "
+                            "use --repo owner/name" + detail
+                        )
+                    detected_repo = local.repo
+                    detected_version = local.core_version
+                    detected_runtime = local.runtime
+                    detected_os = local.os_name
+                    detected_packages = list(local.detected_packages)
+                    sources = local.sources
+                    context_warnings = list(local.warnings)
+
+                request = DiagnosisRequest(
+                    repo=detected_repo,
+                    error=error_text,
+                    question=question,
+                    core_version=detected_version,
+                    runtime=detected_runtime,
+                    os=detected_os,
+                    detected_packages=detected_packages,
+                    context_sources=sources,
+                    context_warnings=context_warnings,
+                    plugins=plugins,
+                    config_keys=list(config_key or []),
+                    packages=list(package or []),
+                    confirm=confirm,
+                )
                 response, _packet, trace = run_diagnosis(request, session, persist=not no_persist)
                 # Somebody is there and the answer is waiting on them: show the
                 # reading, ask, and answer again with their agreement. The

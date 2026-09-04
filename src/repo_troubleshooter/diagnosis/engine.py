@@ -21,7 +21,7 @@ import datetime as dt
 import hashlib
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -41,7 +41,11 @@ from repo_troubleshooter.evidence import packet as ev
 from repo_troubleshooter.evidence.packet import EvidencePacket
 from repo_troubleshooter.fingerprint import features as feat
 from repo_troubleshooter.fingerprint.error import ErrorFingerprint, fingerprint
-from repo_troubleshooter.relations.change_resolution import ChangeCandidate, resolve_change
+from repo_troubleshooter.relations.change_resolution import (
+    ChangeCandidate,
+    resolve_change,
+    resolve_linked_change,
+)
 from repo_troubleshooter.relations.signatures import load_features, require_fresh_signatures
 from repo_troubleshooter.retrieval import pipeline
 from repo_troubleshooter.store.models import (
@@ -190,7 +194,7 @@ def _persist_incident_record(
     record.release_contains_change = bool(containment and containment.containing)
     record.runtime_verified = False
     record.evidence_level = evidence_level
-    record.derivation = "inferred" if change else "text_explicit"
+    record.derivation = change.derivation if change else "text_explicit"
     record.conflicts = conflicts
     record.provenance = {
         "change": change.to_json() if change else None,
@@ -211,6 +215,7 @@ def _understanding(
     """Everything the gate acted on, in a form a person can check."""
     understood = Understanding(
         packages_stated=sorted(request.packages),
+        workspace_packages=sorted(request.detected_packages),
         failing=sorted(features.subject_packages),
         used=sorted(features.subject_dependencies),
         cleared=sorted(features.subject_confirmed_non_primary),
@@ -227,6 +232,8 @@ def _understanding(
         core_version=request.core_version,
         runtime=request.runtime,
         os=request.os,
+        context_sources=request.context_sources,
+        context_warnings=request.context_warnings,
         incident_title=incident.title,
         incident_url=incident.url,
         identity_rule=getattr(identity, "rule", None),
@@ -472,7 +479,9 @@ def diagnose(
     release_obj: Release | None = None
 
     if git is not None and releases:
-        change = resolve_change(git, releases, symptom_tokens, symptom_text=symptom_text)
+        change = resolve_linked_change(session, repo, symptom_obj, git)
+        if change is None:
+            change = resolve_change(git, releases, symptom_tokens, symptom_text=symptom_text)
         debug.change = change.to_json() if change else None
         if change is not None:
             # `persist=False` means read-only, and that has to include the
@@ -488,6 +497,12 @@ def diagnose(
     change_ids: list[str] = []
     release_ids: list[str] = []
     if change is not None:
+        if change.source_object_id is not None:
+            change_obj = session.get(SourceObject, change.source_object_id)
+            if change_obj is not None:
+                change_ids.append(
+                    packet.add(ev.from_source_object(session, change_obj, role="change"))
+                )
         commit_row = session.scalar(
             select(GitCommit).where(
                 GitCommit.repo_id == repo.id, GitCommit.sha == change.commit_sha
@@ -566,15 +581,26 @@ def diagnose(
     ]
 
     if change is not None and change_ids:
+        if change.derivation == "github_native":
+            value = (
+                f"pull request {change.evidence.get('pull_request')} closes this issue and "
+                f"was merged as commit {change.short_sha} ({change.subject})"
+            )
+            confidence: Literal["high", "medium", "low"] = "high"
+            basis: Literal["explicit", "deterministic", "observed", "inferred"] = "explicit"
+        else:
+            value = (
+                f"commit {change.short_sha} ({change.subject}) touches "
+                f"{', '.join(change.files[:3])} and is the most likely related change"
+            )
+            confidence = "medium"
+            basis = "inferred"
         claims.append(
             Claim(
                 type="change",
-                value=(
-                    f"commit {change.short_sha} ({change.subject}) touches "
-                    f"{', '.join(change.files[:3])} and is the most likely related change"
-                ),
-                confidence="medium",
-                basis="inferred",
+                value=value,
+                confidence=confidence,
+                basis=basis,
                 evidence_ids=change_ids,
             )
         )

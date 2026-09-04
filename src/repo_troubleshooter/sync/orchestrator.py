@@ -14,9 +14,9 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from sqlalchemy import cast, select
+from sqlalchemy import cast, func, select
 from sqlalchemy import update as sa_update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
@@ -27,13 +27,25 @@ from repo_troubleshooter.connectors.github.client import GitHubClient
 from repo_troubleshooter.connectors.github.discussions import Discussion, iter_discussions
 from repo_troubleshooter.connectors.github.probe import RepoSurfaces, probe_repository
 from repo_troubleshooter.connectors.github.releases import iter_releases
+from repo_troubleshooter.connectors.github.work_items import (
+    WorkItem,
+    fetch_work_item,
+    iter_work_items,
+)
 from repo_troubleshooter.profiles.loader import RepoProfile
 from repo_troubleshooter.relations.extract import extract_references
 from repo_troubleshooter.relations.signatures import build_for_repository
 from repo_troubleshooter.store.db import session_scope
-from repo_troubleshooter.store.models import Release, Repository, SourceObject
+from repo_troubleshooter.store.models import (
+    IncidentResolutionRecord,
+    RelationAssertion,
+    Release,
+    Repository,
+    SourceObject,
+)
 from repo_troubleshooter.sync import upsert
 from repo_troubleshooter.versions import semver
+from repo_troubleshooter.versions.containment import compute_containment
 from repo_troubleshooter.versions.packages import discover_manifests, store_manifests
 
 ProgressFn = Callable[[str], None]
@@ -599,6 +611,347 @@ def sync_discussions(
     return report
 
 
+def _ingest_work_item(
+    session: Session, repo: Repository, item: WorkItem
+) -> tuple[int, int, SourceObject]:
+    """Write one issue or pull request and its first page of comments."""
+    obj = upsert.upsert_source_object(
+        session,
+        repo_id=repo.id,
+        kind=item.kind,
+        native_id=item.node_id,
+        number=item.number,
+        url=item.url,
+        title=item.title,
+        state=item.state,
+        author=item.author,
+        author_association=item.author_association,
+        source_created_at=item.created_at,
+        source_updated_at=item.updated_at,
+        source_closed_at=item.closed_at,
+        extra={
+            "labels": item.labels,
+            "state_reason": item.state_reason,
+            "comment_total": item.comment_total,
+            "comments_truncated": item.comments_truncated,
+            "merged_at": item.merged_at.isoformat() if item.merged_at else None,
+            "merge_commit_sha": item.merge_commit_sha,
+            "base_ref": item.base_ref,
+            "head_ref": item.head_ref,
+            "closing_issues_truncated": item.closing_issues_truncated,
+        },
+    )
+    objects = 1
+    changed = int(
+        _ingest_body(
+            session,
+            repo=repo,
+            obj=obj,
+            body=item.body,
+            source_updated_at=item.updated_at,
+        )
+    )
+    for comment in item.comments:
+        comment_obj = upsert.upsert_source_object(
+            session,
+            repo_id=repo.id,
+            kind="issue_comment",
+            native_id=comment.node_id,
+            url=comment.url,
+            parent_id=obj.id,
+            author=comment.author,
+            author_association=comment.author_association,
+            source_created_at=comment.created_at,
+            source_updated_at=comment.updated_at,
+            extra={"parent_kind": item.kind, "parent_number": item.number},
+        )
+        objects += 1
+        changed += int(
+            _ingest_body(
+                session,
+                repo=repo,
+                obj=comment_obj,
+                body=comment.body,
+                source_updated_at=comment.updated_at,
+            )
+        )
+
+    if item.kind == "pull_request":
+        for issue_node_id, issue_number, issue_url in item.closing_issues:
+            issue_obj = session.scalar(
+                select(SourceObject).where(
+                    SourceObject.repo_id == repo.id,
+                    SourceObject.kind == "issue",
+                    SourceObject.number == issue_number,
+                )
+            )
+            upsert.assert_relation(
+                session,
+                repo_id=repo.id,
+                relation_type="CLOSES",
+                src_object_id=obj.id,
+                dst_object_id=issue_obj.id if issue_obj else None,
+                dst_ref=None if issue_obj else f"issue:{issue_number}",
+                derivation="github_native",
+                evidence={
+                    "source": "closingIssuesReferences",
+                    "issue_node_id": issue_node_id,
+                    "issue_url": issue_url,
+                },
+            )
+        if item.merge_commit_sha:
+            upsert.assert_relation(
+                session,
+                repo_id=repo.id,
+                relation_type="PR_MERGED_AS",
+                src_object_id=obj.id,
+                dst_ref=f"commit:{item.merge_commit_sha}",
+                derivation="github_native",
+                evidence={"source": "mergeCommit.oid", "merged_at": obj.extra.get("merged_at")},
+            )
+    return objects, changed, obj
+
+
+def sync_work_items(
+    session: Session,
+    repo: Repository,
+    profile: RepoProfile,
+    client: GitHubClient,
+    kind: Literal["issues", "pull_requests"],
+    *,
+    full: bool = False,
+    max_items: int = 200,
+    progress: ProgressFn = _noop,
+) -> SourceReport:
+    """Incrementally sync Issues or PRs, then fetch frozen seeds directly."""
+    typed_kind: Literal["issue", "pull_request"] = "issue" if kind == "issues" else "pull_request"
+    source = kind
+    report = SourceReport(source=source)
+    started = time.monotonic()
+    state = upsert.mark_sync_start(session, repo.id, source)
+    watermark = None if full else state.watermark
+    highest_seen = watermark
+    top_level = 0
+    seeded = 0
+    truncated_comments = 0
+    truncated_closing_issues = 0
+    seen_numbers: set[int] = set()
+    seed_numbers = (
+        profile.seed_objects.issues if typed_kind == "issue" else profile.seed_objects.pull_requests
+    )
+
+    try:
+        for item in iter_work_items(
+            client,
+            profile.owner,
+            profile.name,
+            typed_kind,
+            page_size=50,
+            updated_after=watermark,
+            max_items=max_items,
+        ):
+            objects, changed, _ = _ingest_work_item(session, repo, item)
+            report.objects += objects
+            report.changed += changed
+            top_level += 1
+            truncated_comments += int(item.comments_truncated)
+            truncated_closing_issues += int(item.closing_issues_truncated)
+            seen_numbers.add(item.number)
+            if item.updated_at and (highest_seen is None or item.updated_at > highest_seen):
+                highest_seen = item.updated_at
+
+        for number in seed_numbers:
+            if number in seen_numbers:
+                continue
+            seed_item = fetch_work_item(client, profile.owner, profile.name, typed_kind, number)
+            if seed_item is None:
+                raise RuntimeError(f"configured {typed_kind} seed #{number} does not exist")
+            objects, changed, _ = _ingest_work_item(session, repo, seed_item)
+            report.objects += objects
+            report.changed += changed
+            seeded += 1
+            truncated_comments += int(seed_item.comments_truncated)
+            truncated_closing_issues += int(seed_item.closing_issues_truncated)
+
+        session.flush()
+        stored_top_level = (
+            session.scalar(
+                select(func.count(SourceObject.id)).where(
+                    SourceObject.repo_id == repo.id, SourceObject.kind == typed_kind
+                )
+            )
+            or 0
+        )
+        total_key = "issue_count" if typed_kind == "issue" else "pull_request_count"
+        upstream_total = int((repo.surfaces or {}).get(total_key) or 0)
+        capped_this_run = bool(max_items) and top_level >= max_items
+        coverage_partial = bool(upstream_total and stored_top_level < upstream_total)
+        nested_partial = bool(truncated_comments or truncated_closing_issues)
+        capped = capped_this_run or coverage_partial or nested_partial
+        report.status = "degraded" if capped else "complete"
+        report.detail = {
+            "top_level": top_level,
+            "stored_top_level": stored_top_level,
+            "upstream_total": upstream_total,
+            "seeded": seeded,
+            "configured_seeds": seed_numbers,
+            "watermark_used": watermark.isoformat() if watermark else None,
+            "capped": capped,
+            "capped_this_run": capped_this_run,
+            "coverage_partial": coverage_partial,
+            "truncated_comment_threads": truncated_comments,
+            "truncated_closing_issue_lists": truncated_closing_issues,
+            "nested_partial": nested_partial,
+        }
+        upsert.mark_sync_success(
+            session,
+            repo.id,
+            source,
+            watermark=highest_seen,
+            objects_seen=report.objects,
+            full=full and not capped,
+            status=report.status,
+            stats=report.detail,
+        )
+        progress(
+            f"{source}: {top_level} current + {seeded} historical seeds "
+            f"({report.changed} bodies changed)"
+        )
+    except Exception as exc:  # noqa: BLE001
+        report.status = "failed"
+        report.error = str(exc)
+        session.rollback()
+        upsert.mark_sync_failure(session, repo.id, source, str(exc))
+        session.commit()
+        progress(f"{source}: FAILED {exc}")
+    report.duration_s = time.monotonic() - started
+    return report
+
+
+def validate_reviewed_incidents(
+    session: Session,
+    repo: Repository,
+    profile: RepoProfile,
+    git: GitRepo,
+    *,
+    progress: ProgressFn = _noop,
+) -> SourceReport:
+    """Validate profile-curated chains and materialise reviewed audit records."""
+    report = SourceReport(source="reviewed_incidents")
+    started = time.monotonic()
+    upsert.mark_sync_start(session, repo.id, report.source)
+    try:
+        for policy in profile.reviewed_incidents:
+            issue = session.scalar(
+                select(SourceObject).where(
+                    SourceObject.repo_id == repo.id,
+                    SourceObject.kind == "issue",
+                    SourceObject.number == policy.issue,
+                )
+            )
+            pr = session.scalar(
+                select(SourceObject).where(
+                    SourceObject.repo_id == repo.id,
+                    SourceObject.kind == "pull_request",
+                    SourceObject.number == policy.pull_request,
+                )
+            )
+            release = session.scalar(
+                select(Release).where(
+                    Release.repo_id == repo.id, Release.tag_name == policy.first_release
+                )
+            )
+            if issue is None or pr is None or release is None:
+                raise RuntimeError(
+                    f"reviewed incident {policy.key} is missing its issue, PR, or release"
+                )
+            closes = session.scalar(
+                select(RelationAssertion).where(
+                    RelationAssertion.repo_id == repo.id,
+                    RelationAssertion.relation_type == "CLOSES",
+                    RelationAssertion.src_object_id == pr.id,
+                    RelationAssertion.dst_object_id == issue.id,
+                    RelationAssertion.derivation == "github_native",
+                )
+            )
+            if closes is None:
+                raise RuntimeError(
+                    f"PR #{policy.pull_request} does not natively close issue #{policy.issue}"
+                )
+            actual_merge = str((pr.extra or {}).get("merge_commit_sha") or "")
+            if actual_merge != policy.merge_commit:
+                raise RuntimeError(
+                    f"reviewed incident {policy.key} merge commit changed: {actual_merge or '-'}"
+                )
+            containment = compute_containment(
+                session, repo, policy.merge_commit, git=git, persist=True
+            )
+            if containment.first_release_containing != policy.first_release:
+                raise RuntimeError(
+                    f"reviewed incident {policy.key}: expected first release "
+                    f"{policy.first_release}, got {containment.first_release_containing or '-'}"
+                )
+
+            incident_key = f"reviewed:{policy.key}"
+            record = session.scalar(
+                select(IncidentResolutionRecord).where(
+                    IncidentResolutionRecord.repo_id == repo.id,
+                    IncidentResolutionRecord.incident_key == incident_key,
+                )
+            )
+            if record is None:
+                record = IncidentResolutionRecord(repo_id=repo.id, incident_key=incident_key)
+                session.add(record)
+            record.symptom_signature = issue.title
+            record.symptom_object_id = issue.id
+            record.symptom_evidence_ids = [f"ev:issue:{policy.issue}"]
+            record.change_evidence_ids = [
+                f"ev:pull_request:{policy.pull_request}",
+                f"ev:commit:{policy.merge_commit[:12]}",
+            ]
+            record.release_evidence_ids = [f"ev:release:{policy.first_release}"]
+            record.candidate_fix_commit = policy.merge_commit
+            record.first_release_containing_change = policy.first_release
+            record.release_set = containment.containing
+            record.reported_versions = policy.reported_versions
+            record.maintainer_confirmed = True
+            record.release_contains_change = True
+            record.runtime_verified = False
+            record.evidence_level = "high"
+            record.derivation = "github_native"
+            record.review_state = "reviewed"
+            record.conflicts = []
+            record.provenance = {
+                "profile": profile.repo,
+                "reviewed_incident": policy.model_dump(mode="json"),
+                "containment": containment.to_json(),
+                "runtime_verified": False,
+            }
+            report.objects += 1
+
+        report.changed = report.objects
+        report.status = "complete"
+        report.detail = {"reviewed": report.objects}
+        upsert.mark_sync_success(
+            session,
+            repo.id,
+            report.source,
+            objects_seen=report.objects,
+            full=True,
+            stats=report.detail,
+        )
+        progress(f"reviewed incidents: {report.objects} validated")
+    except Exception as exc:  # noqa: BLE001
+        report.status = "failed"
+        report.error = str(exc)
+        session.rollback()
+        upsert.mark_sync_failure(session, repo.id, report.source, str(exc))
+        session.commit()
+        progress(f"reviewed incidents: FAILED {exc}")
+    report.duration_s = time.monotonic() - started
+    return report
+
+
 def resolve_referenced_commits(
     session: Session,
     repo: Repository,
@@ -871,6 +1224,8 @@ def sync_repository(
     settings: Settings | None = None,
     full: bool = False,
     max_discussions: int | None = None,
+    max_issues: int = 200,
+    max_pull_requests: int = 200,
     include_docs: bool = True,
     include_git: bool = True,
     backfill_pages: int = 0,
@@ -976,11 +1331,46 @@ def sync_repository(
                         progress=progress,
                     )
 
+        if surfaces.issues_enabled and profile.support_surfaces.issues is not False:
+            with session_scope() as session:
+                repo = _require_repository(session, repo_id)
+                report.sources["issues"] = sync_work_items(
+                    session,
+                    repo,
+                    profile,
+                    client,
+                    "issues",
+                    full=full,
+                    max_items=max_issues,
+                    progress=progress,
+                )
+
+        if surfaces.pull_request_count and profile.support_surfaces.prs is not False:
+            with session_scope() as session:
+                repo = _require_repository(session, repo_id)
+                report.sources["pull_requests"] = sync_work_items(
+                    session,
+                    repo,
+                    profile,
+                    client,
+                    "pull_requests",
+                    full=full,
+                    max_items=max_pull_requests,
+                    progress=progress,
+                )
+
         if git is not None:
             with session_scope() as session:
                 repo = _require_repository(session, repo_id)
                 report.sources["commits"] = resolve_referenced_commits(
                     session, repo, git, progress=progress
+                )
+
+        if git is not None and profile.reviewed_incidents:
+            with session_scope() as session:
+                repo = _require_repository(session, repo_id)
+                report.sources["reviewed_incidents"] = validate_reviewed_incidents(
+                    session, repo, profile, git, progress=progress
                 )
 
         if git is not None:

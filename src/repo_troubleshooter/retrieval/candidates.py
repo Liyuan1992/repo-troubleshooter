@@ -179,7 +179,7 @@ def search(
     repo_id: int,
     fingerprint: ErrorFingerprint,
     limit: int = 5,
-    kinds: tuple[str, ...] = ("discussion", "release"),
+    kinds: tuple[str, ...] = ("discussion", "issue", "release"),
 ) -> RetrievalResult:
     """Score candidate objects for one fingerprint, then apply the threshold."""
     tokens = _select_query_tokens(fingerprint)

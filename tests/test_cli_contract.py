@@ -37,7 +37,12 @@ UNRELATED_ERROR = (
 )
 
 
-def run_cli(*args: str, timeout: int = 300) -> subprocess.CompletedProcess[str]:
+def run_cli(
+    *args: str,
+    timeout: int = 300,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     executable = str(CLI) if CLI.exists() else None
     argv = (
         [executable, *args]
@@ -50,7 +55,8 @@ def run_cli(*args: str, timeout: int = 300) -> subprocess.CompletedProcess[str]:
         text=True,
         encoding="utf-8",
         errors="replace",
-        cwd=str(PROJECT_ROOT),
+        cwd=str(cwd or PROJECT_ROOT),
+        env=env,
         timeout=timeout,
         check=False,
     )
@@ -82,6 +88,58 @@ class TestCommandSurface:
         assert result.returncode == 0
         payload = json.loads(result.stdout)
         assert payload["status"] == "insufficient_evidence"
+        assert payload["recommended_action"]["type"] == "collect_more_info"
+
+    def test_workspace_supplies_context_without_authorising_the_detected_package(
+        self, tmp_path: Path
+    ):
+        (tmp_path / "package.json").write_text(
+            json.dumps(
+                {
+                    "name": "context-consumer",
+                    "version": "1.0.0",
+                    "dependencies": {"@deepseek-ai/dsh": "0.1.2-alpha.1"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        if os.name == "nt":
+            (bin_dir / "node.cmd").write_text("@echo off\r\necho v24.11.1\r\n", encoding="utf-8")
+        else:
+            node = bin_dir / "node"
+            node.write_text("#!/bin/sh\necho v24.11.1\n", encoding="utf-8")
+            node.chmod(0o755)
+        env = dict(os.environ)
+        env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
+
+        result = run_cli(
+            "diagnose",
+            "--workspace",
+            str(tmp_path),
+            "--json",
+            "--no-persist",
+            "--error",
+            LOADER_ERROR,
+            env=env,
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        payload = json.loads(result.stdout)
+        environment = payload["environment"]
+        assert environment["repo"] == REPO
+        assert environment["core_version"] == "0.1.2-alpha.1"
+        assert environment["runtime"] == "node 24.11.1"
+        assert environment["os"] in {"windows", "linux", "macos"}
+        assert environment["detected_packages"] == ["@deepseek-ai/dsh"]
+        assert payload["understood"]["context_sources"]["core_version"] == (
+            "package.json dependency"
+        )
+        assert payload["understood"]["context_warnings"]
+        assert payload["authorization"]["authorized"] is False
+        assert payload["authorization"]["requires_confirmation"] is True
+        assert payload["authorization"]["proposed_action"] == "upgrade"
         assert payload["recommended_action"]["type"] == "collect_more_info"
 
 

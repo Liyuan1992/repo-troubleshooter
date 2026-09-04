@@ -65,6 +65,10 @@ class TestDiscrimination:
         assert "econnrefused" in fp.discriminative
         assert "err_invalid_arg_type" in fp.discriminative
 
+    def test_http_route_is_structural_identity(self):
+        fp = fingerprint("GET /metrics returns 404 after the upgrade")
+        assert "/metrics" in fp.discriminative
+
 
 class TestTokenize:
     def test_dotted_calls_contribute_their_parts(self):

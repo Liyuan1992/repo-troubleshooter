@@ -14,7 +14,15 @@ from __future__ import annotations
 
 import pytest
 
-from evals.holdout import HoldoutCase, HoldoutResult, _pooled, gate_failures
+from evals.holdout import (
+    HoldoutCase,
+    HoldoutResult,
+    _extract_report_version,
+    _pooled,
+    gate_failures,
+    run,
+)
+from repo_troubleshooter.profiles.loader import load_profile
 
 
 def case(
@@ -23,6 +31,7 @@ def case(
     matched: bool = False,
     opportunity: bool = False,
     proposes: bool = False,
+    authorized: bool = False,
 ) -> HoldoutCase:
     return HoldoutCase(
         object_id=number,
@@ -32,6 +41,8 @@ def case(
         matched_object_id=None,
         proposed_action="upgrade" if proposes else None,
         proposed_target="v2" if proposes else None,
+        recommended_action="upgrade" if authorized else "collect_more_info",
+        authorized=authorized,
         status="probable" if matched else "insufficient_evidence",
         stopped_at="accepted_same_incident" if matched else "retrieved_candidate",
         proposal_possible=opportunity,
@@ -176,6 +187,11 @@ class TestProvenance:
         payload = result([case(7), case(3)]).to_json()
         assert payload["provenance"]["sampled_numbers"] == [3, 7]
 
+    def test_the_assumed_version_belongs_to_the_repository_run(self):
+        built = result([case(1)])
+        built.assumed_version = "0.5.2"
+        assert built.to_json()["assumed_core_version"] == "0.5.2"
+
 
 class TestTheGate:
     def test_a_run_under_the_threshold_passes(self):
@@ -210,3 +226,29 @@ class TestTheGate:
         assert payload["other_report_proposal_rate_overall"]["value"] == 0.0
         failures = gate_failures(payload)
         assert failures and "positive control" in failures[0]
+
+    def test_an_authorized_holdout_action_always_fails_the_run(self):
+        payload = result(
+            [case(1, matched=True, opportunity=True, proposes=True, authorized=True)]
+        ).to_json()
+        failures = gate_failures(payload)
+        assert any("authorized_action_count" in failure for failure in failures)
+
+
+def test_parallel_holdout_requires_at_least_one_worker():
+    with pytest.raises(ValueError, match="workers"):
+        run(1, 1, workers=0)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("vLLM Version                 : 0.14.0", "0.14.0"),
+        ("- **vLLM**: 0.27.0 (clean venv)", "0.27.0"),
+        ("vllm==0.16.1rc1.dev217+gbb6888b8b", "0.16.1rc1.dev217+gbb6888b8b"),
+        ("As of vLLM version 0.4.0 the feature is unsupported", None),
+    ],
+)
+def test_vllm_report_versions_come_from_template_fields(text, expected):
+    patterns = tuple(load_profile("vllm").holdout.report_version_patterns)
+    assert _extract_report_version(text, patterns) == expected

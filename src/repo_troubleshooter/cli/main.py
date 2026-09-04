@@ -176,6 +176,13 @@ def sync_cmd(
     max_discussions: Annotated[
         int | None, typer.Option("--max-discussions", help="Scope guard; 0 = unlimited.")
     ] = None,
+    max_issues: Annotated[
+        int, typer.Option("--max-issues", help="Newest Issues per run; seeds are additional.")
+    ] = 200,
+    max_pull_requests: Annotated[
+        int,
+        typer.Option("--max-pull-requests", help="Newest PRs per run; seeds are additional."),
+    ] = 200,
     no_docs: Annotated[
         bool, typer.Option("--no-docs", help="Skip versioned docs snapshots.")
     ] = False,
@@ -202,6 +209,8 @@ def sync_cmd(
         profile,
         full=full,
         max_discussions=max_discussions,
+        max_issues=max_issues,
+        max_pull_requests=max_pull_requests,
         include_docs=not no_docs,
         include_git=not no_git,
         backfill_pages=backfill_pages,
@@ -261,6 +270,30 @@ def status_cmd(
                     .where(
                         SourceObject.repo_id == repository.id,
                         SourceObject.kind == "discussion_comment",
+                    ),
+                ),
+                (
+                    "issues",
+                    select(func.count())
+                    .select_from(SourceObject)
+                    .where(SourceObject.repo_id == repository.id, SourceObject.kind == "issue"),
+                ),
+                (
+                    "pull requests",
+                    select(func.count())
+                    .select_from(SourceObject)
+                    .where(
+                        SourceObject.repo_id == repository.id,
+                        SourceObject.kind == "pull_request",
+                    ),
+                ),
+                (
+                    "issue / PR comments",
+                    select(func.count())
+                    .select_from(SourceObject)
+                    .where(
+                        SourceObject.repo_id == repository.id,
+                        SourceObject.kind == "issue_comment",
                     ),
                 ),
                 (

@@ -148,6 +148,8 @@ def from_source_object(
     body = excerpt or (revision.body if revision else None)
     if obj.kind == "discussion":
         evidence_id = discussion_evidence_id(obj.number, obj.native_id)
+    elif obj.kind in {"issue", "pull_request"}:
+        evidence_id = f"ev:{obj.kind}:{obj.number or obj.native_id}"
     elif obj.kind == "discussion_comment":
         evidence_id = f"ev:comment:{obj.native_id}"
     elif obj.kind == "release":
@@ -249,6 +251,19 @@ def resolve(session: Session, repo: Repository, evidence_id: str) -> EvidenceIte
             )
         )
         return from_source_object(session, obj, role="symptom") if obj else None
+
+    if kind in {"issue", "pull_request", "issue_comment"}:
+        stmt = select(SourceObject).where(
+            SourceObject.repo_id == repo.id, SourceObject.kind == kind
+        )
+        stmt = (
+            stmt.where(SourceObject.number == int(locator))
+            if locator.isdigit() and kind != "issue_comment"
+            else stmt.where(SourceObject.native_id == locator)
+        )
+        obj = session.scalar(stmt)
+        role = "change" if kind == "pull_request" else "symptom"
+        return from_source_object(session, obj, role=role) if obj else None
 
     if kind == "release":
         release = session.scalar(

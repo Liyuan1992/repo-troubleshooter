@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-09-04b (mainline iteration on baseline `bf29314`). Fields stay
+Updated: 2026-09-04c (workspace context collection after `40a31bb`). Fields stay
 separated: **current fact**, **verification evidence**, **remaining target**,
 **blockers**. Nothing counts as verified because a test exists; each row names the
 observation behind it.
@@ -378,11 +378,12 @@ payloads beyond the current coverage note.
 
 ## 6. Data
 
-**Current fact.** 550 discussions, 1510 comments, 123 doc files, 7 releases,
-275 package manifests, **15,682 stored symptom signatures** (a SQL count taken
-after the rebuild at extractor version 15, and equal to the `rows_stored_total`
-the rebuild recorded; earlier rounds reported inflated figures - see the
-row-accounting note below). Discussion coverage is still partial and reports `degraded`.
+**Current fact.** At extractor version 16, DeepSeek Harness stores 550 discussions,
+1510 comments, 123 doc files and **16,218 symptom signatures**. vLLM stores 489
+discussions, 930 discussion comments, 1,001 issues, 1,001 pull requests, 8,824
+Issue/PR comments and **65,580 symptom signatures**. vLLM Issues and PRs are deliberately
+bounded and report `degraded`; one frozen historical incident is independently
+stored as `reviewed`. DeepSeek discussion backfill is also still `degraded`.
 A paced backfill (`rt sync … --backfill-pages N`) walks older history a few pages
 at a time, persists its GraphQL cursor, resumes where it stopped, and never claims
 `complete` while pages remain.
@@ -393,19 +394,21 @@ comparable: they summed both mining passes. `discussions_backfill`
 stayed `degraded` with `exhausted: false` throughout. `rt status` shows per-source
 health and `data_as_of`.
 
-**Remaining target.** Full backfill of all 5167 discussions, and a structurally
-different second repository onboarded by profile alone.
+**Remaining target.** Full backfill of all 5167 DeepSeek discussions and broader
+vLLM Issue/PR coverage. The structurally different second repository is built;
+see section 30 for the generalisation gaps it exposed.
 
 **Blockers.** GraphQL point budget - a full walk cannot be done in one run, by
-design. The second repository has not been started.
+design.
 
 ---
 
 ## 7. Delivery
 
 **Current fact.** Local gates all pass: `uv sync --extra dev --frozen`,
-`ruff check .`, `ruff format --check .`, `mypy src`, `pytest` (479 tests),
-`evals/runner.py`, `docker compose up -d`, `db init`, `db ping`, `status`,
+`ruff check .`, `ruff format --check .`, `mypy src` (76 source files),
+`pytest` (**530 tests**), `evals/runner.py` (**70/71**, with the one declared
+paraphrase recall gap retained), `docker compose up -d`, `db init`, `db ping`, `status`,
 `uv build`, and a clean-venv install of the built wheel running `db init`, a
 real `diagnose` against the synced database, and the same `diagnose` over stdio
 MCP - not just `--help` and `--check`, which is what let a wheel that could not
@@ -422,6 +425,11 @@ Every step passed on a machine that is not this one - lint, format, strict
 mypy, unit tests, a migration from an empty database, the database tests, the
 packaging smoke test, and the installed wheel building a schema from an empty
 database against the job's own PostgreSQL service.
+
+That run predates the workspace-context, vLLM connector and second-repository
+census changes described below. Their local verification is recorded here;
+external CI evidence must be tied to the exact delivered commit and run rather
+than inferred from this older result.
 
 **What that run did not cover.** The `Live evaluation suite` step was **skipped**,
 as designed: it is gated on `vars.RUN_LIVE_EVALS`, which is unset. So the live
@@ -1406,8 +1414,9 @@ wrong action, which now needs the authorisation gate to fail as well.
 threshold is enforced in the script and the run is part of the live CI block.
 The judgement of all 15 pairs is committed. Developer suite unchanged at 70/71.
 
-**Remaining target.** One repository, one sample, one seed. A second repository
-would say whether 0.13-0.18 is a property of the engine or of this corpus.
+**Remaining target.** *(Partly built; see section 30.)* The second repository now
+proves the other evidence shape works, but one reviewed vLLM chain is not a
+second population-level false-proposal census.
 
 **Blockers.** None known, with the meaning given in section 21.
 
@@ -1623,26 +1632,26 @@ every adjudicated number moved with it.
 ### The baseline is now a census
 
 All 499 eligible reports, not a sample - so there is no sampling error left
-inside this repository, and more seeds would add nothing. What a second
-repository would answer is whether this generalises, which is a different
-question and is not answered here.
+inside this repository, and more seeds would add nothing. Section 30 now adds
+the second-repository population and shows that this result does not generalise.
 
 | | census (499) |
 |---|---|
-| matched another report | 100 |
+| matched another report | 102 |
 | `proposal_opportunity_count` | 32 |
-| machine proposals | 6 |
-| `other_report_proposal_rate_overall` | 0.0120 |
-| `other_report_proposal_rate_given_opportunity` | **0.1875** |
-| adjudicated: 5 wrong, 1 borderline | |
-| `adjudicated_false_proposal_rate` overall | **0.0100** (upper 0.0120) |
-| `adjudicated_false_proposal_rate` given opportunity | **0.156** (upper 0.1875) |
-| 95% interval (Wilson) on 5/32 | 0.069 - 0.318 |
+| machine proposals | 5 |
+| `other_report_proposal_rate_overall` | 0.0100 |
+| `other_report_proposal_rate_given_opportunity` | **0.1562** |
+| adjudicated: 4 wrong, 1 borderline | |
+| `adjudicated_false_proposal_rate` overall | **0.0080** (upper 0.0100) |
+| `adjudicated_false_proposal_rate` given opportunity | **0.125** (upper 0.1562) |
+| 95% interval (Wilson) on 4/32 | 0.050 - 0.281 |
+| authorised version actions | **0** |
 
-When a version action is reachable, about **one proposal in six points at a
+When a version action is reachable, about **one proposal in eight points at a
 different incident**, and 32 trials cannot say much more precisely than
-"somewhere between 7% and 32%". Still no threshold on it: a census settles
-sampling error, not generalisation, and the second repository is what would.
+"somewhere between 5% and 28%". The vLLM census in section 30 is materially
+worse conditionally and makes the product tradeoff explicit.
 
 ### The measurement code had no tests
 
@@ -1655,9 +1664,10 @@ distinct-versus-drawn report counts, the provenance fields, and the threshold's
 exit decision - including that a failed positive control fails the run whatever
 the rate says. The gate is a pure function now so a test can reach it.
 
-**Verification evidence.** Census of 499, exit 0, positive control reaching a
-proposal. All six proposals read in `evals/holdout_judgement.md`. 502 tests
-pass; evals 70/71; ruff, format and mypy clean.
+**Verification evidence.** Extractor-16 census of 499, exit 0, positive control
+reaching a proposal and authorised actions at zero. All five current proposals
+are read in `evals/holdout_judgement.md`; #46 remains there as corrected
+historical judgement. Current gate counts are reported in section 7.
 
 **Remaining target.** One repository. And nothing yet asks whether a report
 describes a failure at all - `#1648 不支持打断模式吗` is a question, proposed
@@ -1747,9 +1757,121 @@ and is not claimed here.
 
 ---
 
+## 29. Local workspace context
+
+**Current fact.** The local CLI no longer requires a user to transcribe facts
+that the current project already exposes. With `--repo`, `--version`,
+`--runtime`, `--os` and `--package` omitted, it can read only bounded metadata
+from the target workspace and detect:
+
+* the evidence repository from a matching synced package or Git origin;
+* the product version from an installed package manifest, the workspace's own
+  manifest, or an exact dependency declaration, in that order;
+* the runtime version from a fixed `--version` command selected by the repo
+  profile, and the local operating system;
+* related packages present in `package.json`, `pyproject.toml` or the relevant
+  installed package manifest.
+
+Every value is returned with its source. Explicit CLI fields always override
+detected values. Detection only supplies environment data when the workspace is
+actually connected to the selected evidence repository; running the CLI from an
+unrelated checkout does not lend that checkout's Node or OS to a remote report.
+
+Package presence remains non-authoritative. Detected packages are shown as
+"found in the workspace, not assumed failing" and are never copied into the
+structured `packages` field. A version proposal therefore still requires the
+existing echoed confirmation, unless the user explicitly supplies `--package`.
+
+The collector reads known metadata files only, caps their size, executes no
+project scripts, retains no local paths, and does not read `.env`, raw logs,
+tokens or configuration values.
+
+**Verification evidence.** Pure tests cover automatic detection, installed
+manifest precedence, manual overrides, unrelated workspaces, ambiguous
+repositories, Git-origin fallback and the separation between detected packages
+and authorization. An installed CLI subprocess test uses a temporary consumer
+workspace and fake Node executable, detects repo/version/runtime/OS/package,
+reaches the known proposal, and proves it still cannot act without confirmation.
+
+**Remaining target.** Lockfiles whose package is not installed and whose
+manifest declaration is a range do not yet produce an exact version. Reports
+from containers or remote machines still need explicit overrides because local
+host facts would be wrong.
+
+**Blockers.** None.
+
+---
+
+## 30. Second repository: vLLM Issue/PR evidence chain
+
+**Current fact.** `vllm-project/vllm` is now the structurally different second
+repository. The live probe reports Issues as its primary support surface. Sync
+stores Issues and pull requests independently, preserves comments, and records
+GitHub-native `CLOSES` and `PR_MERGED_AS` relations. Historical seeds in the
+profile are fetched directly, so a reproducible old incident does not require a
+walk through tens of thousands of newer work items.
+
+The reviewed baseline is issue #6461 (v0.5.2 returns 404 at `/metrics`), PR
+#6463, merge commit `6366efc67b0aedd2c1721c14385370e50b297fb3`, and release
+v0.5.3. Sync refuses to create the reviewed record unless GitHub says the PR
+closes that issue, the observed merge commit equals the profile record, and Git
+ancestry says v0.5.3 is the first stored release containing it. The record is
+`reviewed`, `maintainer_confirmed=true`, `release_contains_change=true`, and
+`runtime_verified=false` - containment is still not a runtime reproduction.
+
+**Product acceptance.** An evaluator-authored report saying that Prometheus
+metrics disappeared from `/metrics` on 0.5.2 matches #6461. Free text produces
+an `upgrade → v0.5.3` proposal and a digest; only replaying the same request with
+that digest makes it actionable. The same report on 0.5.3 is not told to upgrade
+to 0.5.3, and an unrelated CUDA OOM report abstains. The triplet runs through
+the installed CLI and a newly launched installed MCP stdio process, with Issue,
+PR, commit and release evidence all cited.
+
+**Generalisation gaps found and fixed.** This onboarding could not be completed
+by YAML alone. The core had no Issue/PR connector, symptom retrieval excluded
+Issues, single-segment API routes such as `/metrics` were not structural
+identity, full mirrors were unnecessarily expensive for large repositories,
+and partial clones tried to fetch every unreachable hex token found in logs.
+Those were made repository-neutral capabilities: generic work-item ingestion,
+HTTP-route features (extractor 16), blobless mirrors with full commit/tag graphs,
+and local-only commit-reference resolution. No vLLM name or incident number was
+added to the identity model; the frozen numbers live only in the evaluation
+profile.
+
+**Coverage and tradeoff.** Stored vLLM counts are 489 discussions, 930
+discussion comments, 1,001 issues, 1,001 pull requests, 8,824 Issue/PR comments,
+192 releases, 397 materialised commits and 65,580 signatures. Issue and PR coverage
+is intentionally bounded and therefore `degraded`; docs were not snapshotted
+because this acceptance tests the Issue→PR→Commit→Release path. That is a
+product scope choice, not a claim of full repository support.
+
+**Second-repository census.** Every one of the 1,001 stored Issues was evaluated
+leave-one-out. Repository-template version fields supplied a current version for
+230 reports; missing versions remained unknown rather than inheriting the frozen
+0.5.2 control version. Ninety-six reports matched another Issue. Ten had both a
+released-fix chain and a usable current version; all ten formed proposals, and
+manual full-body adjudication found all ten to be different incidents. Machine
+overall proposal rate: 10/1,001 = 0.0100. Adjudicated conditional false-proposal
+rate: 10/10 = 1.000 (Wilson 95% interval 0.722-1.000). Authorised version actions:
+**0/1,001**. See `evals/vllm_holdout_judgement.md` and the generated
+`evals/reports/vllm-census-final.json`.
+
+**Conclusion and remaining product decision.** Evidence-shape portability is
+demonstrated, but the current lexical identity model's conditional precision is
+not repository-independent. The hard package-or-confirmation gate contained all
+ten wrong proposals, which supports the chosen product tradeoff rather than a
+claim that proposal quality is acceptable. A future semantic or structured
+identity channel needs a calibrated acceptance threshold against both censuses;
+more package names, verbs and sentence-shape rules remain frozen.
+
+**Blockers.** None for the second-repository acceptance. Broader historical
+coverage remains bounded by GitHub API budget and time.
+
+---
+
 ## Not built
 
-Dense retrieval / RRF, B1-B6 baselines, second repository, full backfill,
+Dense retrieval / RRF, B1-B6 baselines, full backfill,
 duplicate-of relations, claim entailment. From spec §22: GraphRAG, Neo4j,
 multi-agent, long-term memory, web UI, automated GitHub replies, whole-codebase
 embedding and automatic "which commit introduced the bug" remain deliberately

@@ -34,7 +34,12 @@ so they can be read rather than assumed.
 Usage
 -----
 
-    uv run python evals/holdout.py [--sample 60] [--seed 20260904]
+    uv run python evals/holdout.py --repo OWNER/NAME [--sample 60] [--seed 20260904]
+
+The repository profile declares which real-report surface is measured, how a
+current version is read, and the frozen positive control. This keeps Issue and
+Discussion populations separate instead of taking whichever repository happens
+to be returned first by the database.
 """
 
 from __future__ import annotations
@@ -42,16 +47,19 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from repo_troubleshooter.diagnosis.contract import DiagnosisRequest, DiagnosisResponse
 from repo_troubleshooter.diagnosis.engine import diagnose
+from repo_troubleshooter.profiles.loader import load_profile
 from repo_troubleshooter.relations.signatures import object_text
 from repo_troubleshooter.store.db import session_scope
 from repo_troubleshooter.store.models import Repository, SourceObject, SymptomSignature
@@ -74,6 +82,8 @@ MIN_TEXT_CHARS = 200
 #: threshold fails the run.
 MAX_OTHER_REPORT_PROPOSAL_RATE = 0.05
 
+ReportKind = Literal["discussion", "issue"]
+
 
 @dataclass
 class HoldoutCase:
@@ -86,25 +96,37 @@ class HoldoutCase:
     proposed_target: str | None
     status: str
     stopped_at: str
-    #: True when the matched incident carries a released fix to point at, so a
-    #: version action was reachable at all. Without this the proposal rate has
-    #: no denominator: a run where nothing could ever propose scores zero for
-    #: the wrong reason.
+    #: True when the matched incident carries a released fix and this report has
+    #: a usable current version, so a version decision was reachable at all.
+    #: Without both, a zero proposal rate describes missing inputs rather than
+    #: identity quality.
     proposal_possible: bool = False
+    source_kind: ReportKind = "discussion"
+    core_version: str | None = None
+    recommended_action: str = "abstain"
+    authorized: bool = False
 
     @property
     def proposes_change(self) -> bool:
         return self.proposed_action in DiagnosisResponse.VERSION_ACTIONS
 
+    @property
+    def takes_authorized_action(self) -> bool:
+        return self.authorized and self.recommended_action in DiagnosisResponse.VERSION_ACTIONS
+
     def to_json(self) -> dict[str, Any]:
         return {
             "object_id": self.object_id,
+            "source_kind": self.source_kind,
+            "core_version": self.core_version,
             "proposal_possible": self.proposal_possible,
             "number": self.number,
             "title": self.title[:120],
             "matched_url": self.matched_url,
             "proposed_action": self.proposed_action,
             "proposed_target": self.proposed_target,
+            "recommended_action": self.recommended_action,
+            "authorized": self.authorized,
             "status": self.status,
             "stopped_at": self.stopped_at,
         }
@@ -115,6 +137,7 @@ class HoldoutResult:
     repo: str
     sample: int
     seed: int
+    assumed_version: str = ASSUMED_VERSION
     cases: list[HoldoutCase] = field(default_factory=list)
     control: dict[str, Any] = field(default_factory=dict)
     #: What this run was measured against. Two runs are only comparable when
@@ -136,6 +159,10 @@ class HoldoutResult:
         """Matches where a version action was reachable at all."""
         return [c for c in self.cases if c.proposal_possible]
 
+    @property
+    def authorized_actions(self) -> list[HoldoutCase]:
+        return [case for case in self.cases if case.takes_authorized_action]
+
     def to_json(self) -> dict[str, Any]:
         proposals = self.proposals
         return {
@@ -143,7 +170,12 @@ class HoldoutResult:
             "repo": self.repo,
             "sample": self.sample,
             "seed": self.seed,
-            "assumed_core_version": ASSUMED_VERSION,
+            "assumed_core_version": (
+                self.assumed_version
+                if self.provenance.get("case_version_source", "fixed") == "fixed"
+                else None
+            ),
+            "positive_control_core_version": self.assumed_version,
             "provenance": self.provenance,
             "method": (
                 "leave-one-out: the sampled report is removed from the evidence store inside a "
@@ -165,13 +197,23 @@ class HoldoutResult:
             "proposal_opportunity_count": {
                 "value": len(self.opportunities),
                 "definition": (
-                    "matches where the incident carried a released fix, so a version action "
-                    "was reachable. This is the denominator of the *conditional* rate only - "
+                    "matches where the incident carried a released fix and the report supplied "
+                    "a usable current version, so a version decision was reachable. This is the "
+                    "denominator of the *conditional* rate only - "
                     "not of the overall rate, which is over the whole sample"
                 ),
             },
             "positive_control": self.control,
             "other_report_proposal_count": len(proposals),
+            "authorized_action_count": {
+                "value": len(self.authorized_actions),
+                "hard_gate": 0,
+                "definition": (
+                    "version-changing recommendations that crossed authorization. Holdout "
+                    "supplies neither a failing package nor a confirmation digest, so any "
+                    "non-zero value is a safety-contract failure"
+                ),
+            },
             "other_report_proposal_rate_overall": {
                 "value": round(len(proposals) / self.sample, 4) if self.sample else 0.0,
                 "numerator": len(proposals),
@@ -219,7 +261,13 @@ CONTROL_SYMPTOM = (
 )
 
 
-def _positive_control(session: Session, repo: Repository) -> dict[str, Any]:
+def _positive_control(
+    session: Session,
+    repo: Repository,
+    *,
+    assumed_version: str,
+    symptom: str,
+) -> dict[str, Any]:
     """Prove this measurement can see a proposal at all.
 
     A false-proposal rate of zero is only a measurement if a non-zero one was
@@ -228,7 +276,7 @@ def _positive_control(session: Session, repo: Repository) -> dict[str, Any]:
     the zero above is describing the harness, not the engine.
     """
     response, _packet, _debug = diagnose(
-        DiagnosisRequest(repo=repo.full_name, error=CONTROL_SYMPTOM, core_version=ASSUMED_VERSION),
+        DiagnosisRequest(repo=repo.full_name, error=symptom, core_version=assumed_version),
         session,
         persist=False,
     )
@@ -251,14 +299,18 @@ def _positive_control(session: Session, repo: Repository) -> dict[str, Any]:
     }
 
 
-def _eligible(session: Session, repo: Repository) -> list[SourceObject]:
-    """Every discussion with enough text to be identified by."""
+def _eligible(
+    session: Session,
+    repo: Repository,
+    report_kinds: tuple[ReportKind, ...],
+) -> list[SourceObject]:
+    """Every configured real-report object with enough text to identify."""
     rows = list(
         session.scalars(
             select(SourceObject)
             .where(
                 SourceObject.repo_id == repo.id,
-                SourceObject.kind == "discussion",
+                SourceObject.kind.in_(report_kinds),
                 SourceObject.parent_id.is_(None),
             )
             .order_by(SourceObject.id)
@@ -271,9 +323,15 @@ def _eligible(session: Session, repo: Repository) -> list[SourceObject]:
     return [row for row in rows if len(object_text(session, row.id) or "") >= MIN_TEXT_CHARS]
 
 
-def _sample_objects(session: Session, repo: Repository, size: int, seed: int) -> list[SourceObject]:
+def _sample_objects(
+    session: Session,
+    repo: Repository,
+    report_kinds: tuple[ReportKind, ...],
+    size: int,
+    seed: int,
+) -> list[SourceObject]:
     """Deterministically sample reports that have enough text to identify."""
-    usable = _eligible(session, repo)
+    usable = _eligible(session, repo, report_kinds)
     rng = random.Random(seed)  # noqa: S311 - sampling a corpus, not a secret
     rng.shuffle(usable)
     return usable[:size]
@@ -282,14 +340,31 @@ def _sample_objects(session: Session, repo: Repository, size: int, seed: int) ->
 def _has_release_evidence(response: DiagnosisResponse) -> bool:
     """Did the matched incident carry a released fix to point at?
 
-    Without one the version gate stops the answer before any action is
-    considered, so no proposal was ever reachable and a zero proposal rate says
-    nothing about identity.
+    Without released-fix evidence the version gate stops the answer before any
+    action is considered. The caller separately checks that this report supplied
+    a version the gate could compare.
     """
     return any(ref.source_type == "release" for ref in response.evidence)
 
 
-def _ask_without(session: Session, repo: Repository, obj: SourceObject) -> HoldoutCase:
+def _extract_report_version(text: str, patterns: tuple[str, ...]) -> str | None:
+    """Read a repository-template version field, never an arbitrary mention."""
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def _ask_without(
+    session: Session,
+    repo: Repository,
+    obj: SourceObject,
+    *,
+    assumed_version: str,
+    case_version_source: Literal["fixed", "report"] = "fixed",
+    report_version_patterns: tuple[str, ...] = (),
+) -> HoldoutCase:
     """Ask about one report with that report taken out of the evidence.
 
     The deletion happens inside a savepoint that is always rolled back, so the
@@ -301,6 +376,11 @@ def _ask_without(session: Session, repo: Repository, obj: SourceObject) -> Holdo
     # asymmetry of my own making, not a property of the engine.
     title = obj.title or ""
     text = f"{title}\n{object_text(session, obj.id)}"
+    case_version = (
+        assumed_version
+        if case_version_source == "fixed"
+        else _extract_report_version(text, report_version_patterns)
+    )
     number = obj.number
     object_id = obj.id
 
@@ -315,7 +395,7 @@ def _ask_without(session: Session, repo: Repository, obj: SourceObject) -> Holdo
         session.flush()
 
         response, _packet, _debug = diagnose(
-            DiagnosisRequest(repo=repo.full_name, error=text, core_version=ASSUMED_VERSION),
+            DiagnosisRequest(repo=repo.full_name, error=text, core_version=case_version),
             session,
             persist=False,
         )
@@ -329,7 +409,13 @@ def _ask_without(session: Session, repo: Repository, obj: SourceObject) -> Holdo
         else None
     )
     return HoldoutCase(
-        proposal_possible=bool(response.incident.matched and _has_release_evidence(response)),
+        proposal_possible=bool(
+            case_version is not None
+            and response.incident.matched
+            and _has_release_evidence(response)
+        ),
+        source_kind="issue" if obj.kind == "issue" else "discussion",
+        core_version=case_version,
         object_id=object_id,
         number=number,
         title=title,
@@ -337,30 +423,102 @@ def _ask_without(session: Session, repo: Repository, obj: SourceObject) -> Holdo
         matched_object_id=None,
         proposed_action=proposed,
         proposed_target=authorization.proposed_target or response.recommended_action.target,
+        recommended_action=response.recommended_action.type,
+        authorized=authorization.authorized,
         status=response.status,
         stopped_at=response.stages.stopped_at,
     )
 
 
-def run(sample: int, seed: int) -> HoldoutResult:
+def _ask_object_id(
+    repo_name: str,
+    object_id: int,
+    assumed_version: str,
+    case_version_source: Literal["fixed", "report"],
+    report_version_patterns: tuple[str, ...],
+) -> HoldoutCase:
+    """Run one case in its own transaction for bounded parallel censuses."""
     with session_scope() as session:
-        repo = session.scalar(select(Repository))
+        repo = session.scalar(select(Repository).where(Repository.full_name == repo_name))
+        obj = session.get(SourceObject, object_id)
+        if repo is None or obj is None or obj.repo_id != repo.id:
+            raise RuntimeError(f"holdout object {object_id} disappeared from {repo_name}")
+        case = _ask_without(
+            session,
+            repo,
+            obj,
+            assumed_version=assumed_version,
+            case_version_source=case_version_source,
+            report_version_patterns=report_version_patterns,
+        )
+        session.rollback()
+        return case
+
+
+def run(
+    sample: int,
+    seed: int,
+    *,
+    repo_name: str = "deepseek-ai/deepseek-harness",
+    report_kinds: tuple[ReportKind, ...] = ("discussion",),
+    assumed_version: str = ASSUMED_VERSION,
+    control_symptom: str = CONTROL_SYMPTOM,
+    workers: int = 1,
+    case_version_source: Literal["fixed", "report"] = "fixed",
+    report_version_patterns: tuple[str, ...] = (),
+) -> HoldoutResult:
+    if workers < 1:
+        raise ValueError("workers must be at least 1")
+    with session_scope() as session:
+        repo = session.scalar(select(Repository).where(Repository.full_name == repo_name))
         if repo is None:
-            raise SystemExit("no repository synced; run `rt sync` first")
-        eligible = _eligible(session, repo)
-        objects = _sample_objects(session, repo, sample, seed)
-        result = HoldoutResult(repo=repo.full_name, sample=len(objects), seed=seed)
-        result.control = _positive_control(session, repo)
+            raise SystemExit(f"repository {repo_name!r} is not synced; run `rt sync` first")
+        eligible = _eligible(session, repo, report_kinds)
+        objects = _sample_objects(session, repo, report_kinds, sample, seed)
+        result = HoldoutResult(
+            repo=repo.full_name,
+            sample=len(objects),
+            seed=seed,
+            assumed_version=assumed_version,
+        )
+        result.control = _positive_control(
+            session,
+            repo,
+            assumed_version=assumed_version,
+            symptom=control_symptom,
+        )
         result.provenance = {
             "seed": seed,
             "requested_sample": sample,
+            "workers": workers,
+            "case_version_source": case_version_source,
+            "report_version_patterns": list(report_version_patterns),
             "eligible_reports": len(eligible),
+            "report_kinds": list(report_kinds),
+            "reports_in_corpus": session.scalar(
+                select(func.count())
+                .select_from(SourceObject)
+                .where(
+                    SourceObject.repo_id == repo.id,
+                    SourceObject.kind.in_(report_kinds),
+                    SourceObject.parent_id.is_(None),
+                )
+            ),
             "discussions_in_corpus": session.scalar(
                 select(func.count())
                 .select_from(SourceObject)
                 .where(
                     SourceObject.repo_id == repo.id,
                     SourceObject.kind == "discussion",
+                    SourceObject.parent_id.is_(None),
+                )
+            ),
+            "issues_in_corpus": session.scalar(
+                select(func.count())
+                .select_from(SourceObject)
+                .where(
+                    SourceObject.repo_id == repo.id,
+                    SourceObject.kind == "issue",
                     SourceObject.parent_id.is_(None),
                 )
             ),
@@ -371,11 +529,48 @@ def run(sample: int, seed: int) -> HoldoutResult:
             ),
             "data_as_of": result.control.get("data_as_of"),
             "sampled_numbers": sorted(o.number for o in objects if o.number is not None),
+            "sampled_refs": sorted(
+                f"{o.kind}:{o.number if o.number is not None else o.native_id}" for o in objects
+            ),
         }
-        for index, obj in enumerate(objects, start=1):
-            result.cases.append(_ask_without(session, repo, obj))
-            if index % 10 == 0:
-                print(f"  {index}/{len(objects)} reports asked")
+        object_ids = [obj.id for obj in objects]
+        if workers == 1:
+            sequential_cases = (
+                _ask_without(
+                    session,
+                    repo,
+                    obj,
+                    assumed_version=assumed_version,
+                    case_version_source=case_version_source,
+                    report_version_patterns=report_version_patterns,
+                )
+                for obj in objects
+            )
+            for index, case in enumerate(sequential_cases, start=1):
+                result.cases.append(case)
+                if index % 10 == 0:
+                    print(f"  {index}/{len(objects)} reports asked")
+        else:
+            resolved_repo_name = repo.full_name
+            session.rollback()
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                parallel_cases = executor.map(
+                    lambda object_id: _ask_object_id(
+                        resolved_repo_name,
+                        object_id,
+                        assumed_version,
+                        case_version_source,
+                        report_version_patterns,
+                    ),
+                    object_ids,
+                )
+                for index, case in enumerate(parallel_cases, start=1):
+                    result.cases.append(case)
+                    if index % 10 == 0:
+                        print(f"  {index}/{len(objects)} reports asked")
+        result.provenance["reports_with_version"] = sum(
+            case.core_version is not None for case in result.cases
+        )
         session.rollback()
     return result
 
@@ -390,10 +585,18 @@ def _pooled(results: list[HoldoutResult]) -> dict[str, Any]:
     proposals = sum(len(r.proposals) for r in results)
     matches = sum(len(r.identified) for r in results)
     opportunities = sum(len(r.opportunities) for r in results)
+    distinct_refs = {
+        ref
+        for result in results
+        for ref in result.provenance.get(
+            "sampled_refs",
+            [str(number) for number in result.provenance["sampled_numbers"]],
+        )
+    }
     return {
         "seeds": [r.seed for r in results],
         "reports": sample,
-        "distinct_reports": len({n for r in results for n in r.provenance["sampled_numbers"]}),
+        "distinct_reports": len(distinct_refs),
         "other_report_match_rate": round(matches / sample, 4) if sample else 0.0,
         "proposal_opportunity_count": opportunities,
         "other_report_proposal_count": proposals,
@@ -421,6 +624,12 @@ def gate_failures(payload: dict[str, Any]) -> list[str]:
             "the positive control did not reach a proposal, so a low rate would "
             "describe this harness rather than the engine"
         )
+    authorized_actions = payload["authorized_action_count"]["value"]
+    if authorized_actions:
+        failures.append(
+            f"authorized_action_count is {authorized_actions}; holdout supplied neither a "
+            "failing package nor a confirmation digest"
+        )
     measured = payload["other_report_proposal_rate_overall"]["value"]
     if measured > MAX_OTHER_REPORT_PROPOSAL_RATE:
         failures.append(
@@ -442,6 +651,10 @@ def _print(payload: dict[str, Any], result: HoldoutResult) -> None:
     print(f"  other_report_match_rate                      = {match_rate}")
     print(f"  proposal_opportunity_count                   = {opportunities}")
     print(
+        "  authorized_action_count                     = "
+        f"{payload['authorized_action_count']['value']}"
+    )
+    print(
         f"  other_report_proposal_rate_overall           = {overall['value']} "
         f"({overall['numerator']}/{overall['denominator']})"
     )
@@ -461,7 +674,18 @@ def _print(payload: dict[str, Any], result: HoldoutResult) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--repo",
+        default="deepseek-ai/deepseek-harness",
+        help="repository profile/full name whose real reports are measured",
+    )
     parser.add_argument("--sample", type=int, default=60)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="independent database transactions to evaluate concurrently",
+    )
     parser.add_argument(
         "--seed",
         default="20260904",
@@ -475,8 +699,30 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    profile = load_profile(args.repo)
+    report_kinds = tuple(profile.holdout.report_kinds)
+    assumed_version = profile.holdout.assumed_version
+    control_symptom = profile.holdout.positive_control_error
+    if not report_kinds or assumed_version is None or not control_symptom:
+        raise SystemExit(
+            f"profile {profile.repo!r} needs holdout.report_kinds, assumed_version, "
+            "and positive_control_error"
+        )
     seeds = [int(part) for part in str(args.seed).split(",") if part.strip()]
-    results = [run(args.sample, seed) for seed in seeds]
+    results = [
+        run(
+            args.sample,
+            seed,
+            repo_name=profile.repo,
+            report_kinds=report_kinds,
+            assumed_version=assumed_version,
+            control_symptom=control_symptom,
+            workers=args.workers,
+            case_version_source=profile.holdout.case_version_source,
+            report_version_patterns=tuple(profile.holdout.report_version_patterns),
+        )
+        for seed in seeds
+    ]
 
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     path = REPORTS_DIR / args.out

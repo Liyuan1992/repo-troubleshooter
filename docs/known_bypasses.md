@@ -15,6 +15,7 @@ authorisation gate to fail as well.
 | Provenance marked in words not on the label list, in front of an indented block (`Seen in an unrelated 2023 thread:`) | the block reads as the reporter's own, so its paths and symbols can carry identity | open. Fences and `>` need no words; indentation does, and the list is small on purpose |
 | A subject and its predicate separated by a clause of their own, beyond what shallow parsing follows | a claim read as belonging to the wrong subject, or not read | open, inherent to the approach |
 | `unread_claims` in the echoed reading is capped at six entries | a very long report can be confirmed without every unread sentence being visible | open |
+| Two vLLM bug reports share an outer worker frame, hardware/topic word, benchmark scaffold or broad execution phase but fail for different reasons | in the bounded 1,001-Issue census, all 10 version proposals pointed at a different incident; the package-or-confirmation gate kept authorised actions at zero | open product-quality gap. Do not add another phrase list; a semantic or structured identity channel needs calibration against both censuses before it can authorise anything |
 
 ## Open — recall
 

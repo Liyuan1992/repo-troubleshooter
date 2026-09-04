@@ -25,8 +25,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from sqlalchemy import or_, select
+from sqlalchemy.orm import Session
+
 from repo_troubleshooter.connectors.git.repo import GitRepo
-from repo_troubleshooter.store.models import Release
+from repo_troubleshooter.store.models import RelationAssertion, Release, Repository, SourceObject
 
 MIN_CHANGE_SCORE = 3.0
 MAX_RANGES = 6
@@ -94,6 +97,8 @@ class ChangeCandidate:
     matched_tokens: list[str]
     release_tag: str
     range_base: str
+    derivation: str = "inferred"
+    source_object_id: int | None = None
     evidence: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
@@ -106,8 +111,69 @@ class ChangeCandidate:
             "matched_tokens": self.matched_tokens,
             "first_release_in_range": self.release_tag,
             "range": f"{self.range_base}..{self.release_tag}",
-            "derivation": "inferred",
+            "derivation": self.derivation,
+            "source_object_id": self.source_object_id,
         }
+
+
+def resolve_linked_change(
+    session: Session,
+    repo: Repository,
+    symptom: SourceObject,
+    git: GitRepo,
+) -> ChangeCandidate | None:
+    """Follow a GitHub-native issue -> closing PR -> merge commit edge.
+
+    This takes precedence over path inference because it is a maintainer-owned
+    relationship exposed by GitHub.  A textual ``#123`` mention is deliberately
+    insufficient; the relation must have ``derivation=github_native``.
+    """
+    if symptom.kind != "issue":
+        return None
+    issue_ref = f"issue:{symptom.number}" if symptom.number else None
+    relation = session.scalar(
+        select(RelationAssertion)
+        .where(
+            RelationAssertion.repo_id == repo.id,
+            RelationAssertion.relation_type == "CLOSES",
+            RelationAssertion.derivation == "github_native",
+            or_(
+                RelationAssertion.dst_object_id == symptom.id,
+                RelationAssertion.dst_ref == issue_ref,
+            ),
+        )
+        .order_by(RelationAssertion.id)
+    )
+    if relation is None:
+        return None
+    pr = session.get(SourceObject, relation.src_object_id)
+    if pr is None or pr.kind != "pull_request":
+        return None
+    merge_sha = str((pr.extra or {}).get("merge_commit_sha") or "")
+    if not merge_sha:
+        return None
+    info = git.commit_info(merge_sha)
+    if info is None:
+        return None
+    return ChangeCandidate(
+        commit_sha=info.sha,
+        short_sha=info.short_sha,
+        subject=pr.title or info.subject,
+        files=[],
+        score=100.0,
+        matched_paths=[],
+        matched_tokens=[],
+        release_tag="",
+        range_base="",
+        derivation="github_native",
+        source_object_id=pr.id,
+        evidence={
+            "rule": "GitHub closingIssuesReferences and mergeCommit.oid",
+            "derivation": "github_native",
+            "pull_request": pr.number,
+            "relation_id": relation.id,
+        },
+    )
 
 
 def _normalize_path(path: str) -> str:

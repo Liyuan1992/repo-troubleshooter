@@ -87,6 +87,9 @@ class Understanding(BaseModel):
 
     #: Packages the user stated as fields.
     packages_stated: list[str] = Field(default_factory=list)
+    #: Packages found in the local workspace. Presence is context, never proof
+    #: that one of them failed and never an authorization source.
+    workspace_packages: list[str] = Field(default_factory=list)
     #: Packages read out of prose, by the role the reading gave them.
     failing: list[str] = Field(default_factory=list)
     used: list[str] = Field(default_factory=list)
@@ -101,6 +104,8 @@ class Understanding(BaseModel):
     core_version: str | None = None
     runtime: str | None = None
     os: str | None = None
+    context_sources: dict[str, str] = Field(default_factory=dict)
+    context_warnings: list[str] = Field(default_factory=list)
     #: The incident this reading points at. The digest has always covered it,
     #: but a digest is not something a person can check - agreeing to a reading
     #: that does not say which incident it matched is not an informed answer.
@@ -150,6 +155,11 @@ class DiagnosisRequest(BaseModel):
     core_version: str | None = None
     runtime: str | None = None  # e.g. "node 24.11.1"
     os: str | None = None  # e.g. "windows"
+    # Safe metadata detected by the local CLI. These fields explain the echo;
+    # they do not participate in action authorization.
+    detected_packages: list[str] = Field(default_factory=list)
+    context_sources: dict[str, str] = Field(default_factory=dict)
+    context_warnings: list[str] = Field(default_factory=list)
     # The packages the user says they are running, stated as fields rather than
     # left to be read out of prose. Prose can be misread - a retraction missed,
     # a quoted ticket taken as the reporter's own - and a misreading that can
@@ -197,6 +207,9 @@ class DiagnosisRequest(BaseModel):
             "os": (self.os or "").lower() or None,
             "plugins": [p.model_dump() for p in self.plugins],
             "config_keys": self.config_keys,
+            "detected_packages": self.detected_packages,
+            "context_sources": self.context_sources,
+            "context_warnings": self.context_warnings,
         }
 
 

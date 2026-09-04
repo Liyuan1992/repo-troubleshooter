@@ -58,7 +58,9 @@ the ones below.
 **No wrong action, ever, without authorisation.** An action that changes what
 someone runs requires either a stated package that the incident names as what
 failed, or an explicit confirmation bound to the digest of the reading being
-shown. This is asserted at zero in the committed suite and does not move.
+shown. This is asserted at zero in the committed suite and now directly counted
+by both real-report censuses; `evals/holdout.py` exits non-zero if a report with
+no package assertion and no confirmation digest crosses the gate.
 
 Everything below this line is *proposal* quality. A proposal is what the reader
 sees and can reject; it is not an action.
@@ -70,16 +72,19 @@ call things: it counts proposals pointing at **another report**, and some of
 those are genuine duplicates where proposing is correct. Only a person can
 separate them, so nothing machine-counted is called "false".
 
-The baseline is a **census of all 499 eligible reports**, so there is no
-sampling error left inside this repository. Seeded sub-samples stay as fast
-regressions and are not the basis of any claim.
+The first baseline is a **census of all 499 eligible DeepSeek reports**, so there
+is no sampling error left inside that stored corpus. The second is a census of
+the bounded 1,001-Issue vLLM corpus. vLLM has much larger upstream history, so
+that census removes sampling error only inside the stored latest-1,000-plus-seed
+slice; it does not remove coverage bias. Seeded sub-samples stay as fast
+regressions and are not the basis of either claim.
 
 | metric | census (499) | fixture (60) | threshold |
 |---|---|---|---|
-| `other_report_proposal_rate_overall` | 0.0120 (6/499) | 0.000 (0/60) | **≤ 0.05** |
-| `other_report_proposal_rate_given_opportunity` | 0.1875 (6/32) | 0.000 (0/3) | tracked, none |
+| `other_report_proposal_rate_overall` | 0.0100 (5/499) | 0.000 (0/60) | **≤ 0.05** |
+| `other_report_proposal_rate_given_opportunity` | 0.1562 (5/32) | 0.000 (0/3) | tracked, none |
 | `proposal_opportunity_count` | 32 | 3 | — |
-| `other_report_match_rate` | 0.2004 (100/499) | 0.267 | tracked, none |
+| `other_report_match_rate` | 0.2044 (102/499) | 0.267 | tracked, none |
 | positive control | reaches a proposal | reaches a proposal | must, or the run fails |
 
 Adjudicated in `evals/holdout_judgement.md` - the only place a number may be
@@ -87,9 +92,24 @@ called false:
 
 | metric | census (499) | upper bound |
 |---|---|---|
-| `adjudicated_false_proposal_rate` overall | **0.0100** (5/499) | 0.0120 (6/499) |
-| `adjudicated_false_proposal_rate` given opportunity | **0.156** (5/32) | 0.1875 (6/32) |
-| 95% interval (Wilson) on 5/32 | **0.069 - 0.318** | |
+| `adjudicated_false_proposal_rate` overall | **0.0080** (4/499) | 0.0100 (5/499) |
+| `adjudicated_false_proposal_rate` given opportunity | **0.125** (4/32) | 0.1562 (5/32) |
+| 95% interval (Wilson) on 4/32 | **0.050 - 0.281** | |
+
+The structurally different vLLM result is adjudicated separately in
+`evals/vllm_holdout_judgement.md`:
+
+| metric | bounded-corpus census (1,001 Issues) |
+|---|---:|
+| reports with a template-bound current version | 230/1,001 |
+| `other_report_match_rate` | 0.0959 (96/1,001) |
+| `proposal_opportunity_count` | 10 |
+| `other_report_proposal_rate_overall` | 0.0100 (10/1,001) |
+| `other_report_proposal_rate_given_opportunity` | 1.000 (10/10) |
+| adjudicated false-proposal rate overall | **0.0100** (10/1,001) |
+| adjudicated false-proposal rate given opportunity | **1.000** (10/10) |
+| Wilson 95% interval on 10/10 | **0.722 - 1.000** |
+| authorised version actions | **0/1,001** |
 
 **Two denominators, on purpose.** The overall rate is the product rate: what a
 user of this corpus meets. The conditional rate is the quality rate: of the
@@ -97,11 +117,14 @@ times a version action was reachable, how often it pointed elsewhere.
 `proposal_opportunity_count` is the denominator of the conditional rate only -
 never of the overall one.
 
-**No threshold on the conditional rate**, and not because it is unflattering. A
-census removes sampling error but not the fact that this is one repository, and
-32 trials cannot narrow the interval below roughly 7%-32%. The second repository
-decides whether this generalises; a threshold is worth arguing about after that,
-and it is the project owner's call, not a number picked to be satisfied today.
+**No threshold has been chosen for the conditional rate.** The second population
+now exists and makes the tradeoff visible: the Issue/PR evidence architecture
+transfers, but proposal precision does not. DeepSeek has 32 opportunities;
+vLLM has only 10 and is a recent bounded slice, with a 0.722-1.000 interval.
+Choosing whether that blocks release, merely labels proposals low-confidence,
+or justifies funding a calibrated semantic/structured identity channel is the
+project owner's product decision. The number is not picked after the fact to be
+satisfied today.
 
 **The fixture is a regression, not an estimate.** Its 0/60 had three
 opportunities.

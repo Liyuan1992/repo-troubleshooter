@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-根据真实仓库证据，把一份错误报告、当前版本和运行环境转换成可验证的故障处理建议。
+根据真实仓库证据，把一份错误报告转换成可验证的故障处理建议。
 
 Repository Troubleshooter 会检索仓库中的讨论、发布版本、提交历史和文档，回答：
 
@@ -16,9 +16,11 @@ Repository Troubleshooter 会检索仓库中的讨论、发布版本、提交历
 ```text
 输入
   错误：     启动后 client boot graph 为空
+
+从当前项目自动检测
   当前版本： 0.1.2-alpha.1
   运行环境： Node.js 24.11.1 / Windows
-  相关包：   @deepseek-ai/dsh-client-modules
+  相关包：   @deepseek-ai/dsh
 
 输出
   已知事件： loader 相关问题
@@ -56,14 +58,24 @@ uv run rt status deepseek-ai/deepseek-harness
 
 ## 诊断问题
 
-将错误报告保存为 `report.txt`，然后运行：
+将错误报告保存为 `report.txt`。在本项目目录中开发运行时，只需指向用户项目：
 
 ```bash
-uv run rt diagnose --repo deepseek-ai/deepseek-harness --error-file report.txt --version 0.1.2-alpha.1 --runtime "node 24.11.1" --os windows --package @deepseek-ai/dsh-client-modules
+uv run rt diagnose --workspace /path/to/project --error-file report.txt
 ```
 
-`--package` 表示用户认为发生故障的组件，可以重复传入。如果暂时无法确定故障包，可以省略，
-先查看工具给出的候选事件、建议和证据，再决定是否确认。
+如果已经把 `rt` 安装到 `PATH`，可以直接进入需要排查的项目：
+
+```bash
+cd /path/to/project
+rt diagnose --error-file report.txt
+```
+
+CLI 会从当前项目自动获取证据仓库、已安装版本、运行时、操作系统和相关包，并在确认前回显
+每个值及其来源。检测到某个依赖只代表项目使用了它，不会被系统悄悄认定为故障主体。
+
+`--repo`、`--version`、`--runtime`、`--os` 和 `--package` 仍然保留，用于覆盖远程报告、
+容器环境或无法唯一判断的情况。
 
 需要机器可读结果时使用 `--json`，需要查看候选和判断过程时使用 `--debug`。完整参数请运行
 `uv run rt diagnose --help`。
@@ -79,9 +91,11 @@ uv run repo-troubleshooter-mcp
 
 ## 当前状态
 
-第一个使用真实数据验证的仓库是
-[`deepseek-ai/deepseek-harness`](https://github.com/deepseek-ai/deepseek-harness)。CLI 和 MCP
-接口现在都可以使用。工具只输出建议与证据，不会直接修改用户项目。第二个仓库仍在验证中。
+目前已经跑通两个结构不同的真实仓库证据链：
+[`deepseek-ai/deepseek-harness`](https://github.com/deepseek-ai/deepseek-harness) 使用
+Discussions 证据链；[`vllm-project/vllm`](https://github.com/vllm-project/vllm) 使用
+Issue → PR → Commit → Release 证据链。CLI 和 MCP 接口都可以使用。真实报告普查也表明，
+自由文本提案仍可能指错事件，因此证据回显和用户确认不能省略。工具不会直接修改用户项目。
 
 ## 相关文档
 

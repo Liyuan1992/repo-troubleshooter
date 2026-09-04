@@ -18,6 +18,10 @@ from repo_troubleshooter.config import get_settings
 SurfaceFlag = Literal[True, False, "auto"]
 
 
+def _default_holdout_kinds() -> list[Literal["discussion", "issue"]]:
+    return ["discussion"]
+
+
 class SupportSurfaces(BaseModel):
     discussions: SurfaceFlag = "auto"
     issues: SurfaceFlag = "auto"
@@ -38,6 +42,59 @@ class DocsPolicy(BaseModel):
     exclude_patterns: list[str] = Field(default_factory=list)
 
 
+class LocalContextPolicy(BaseModel):
+    """How a local checkout exposes the product version and runtime.
+
+    This belongs in the profile because a repository may publish many packages,
+    while only one or two carry the product version users mean when they say
+    "my current version". The collector still discovers values from manifests;
+    the profile only says which discovered package is the core product.
+    """
+
+    core_packages: list[str] = Field(default_factory=list)
+    runtimes: list[Literal["node", "python"]] = Field(default_factory=list)
+
+
+class SeedObjectsPolicy(BaseModel):
+    """Historical objects that must be fetched even when the live walk is capped."""
+
+    issues: list[int] = Field(default_factory=list)
+    pull_requests: list[int] = Field(default_factory=list)
+
+
+class ReviewedIncidentPolicy(BaseModel):
+    """Human-reviewed issue -> PR -> release chain kept in the repository profile.
+
+    This is authority, not a retrieval hint.  Sync validates every pointer
+    against GitHub and git ancestry before writing a reviewed record.
+    """
+
+    key: str
+    issue: int
+    pull_request: int
+    merge_commit: str
+    first_release: str
+    reported_versions: list[str] = Field(default_factory=list)
+    notes: str | None = None
+
+
+class HoldoutPolicy(BaseModel):
+    """Repository-specific inputs for the real-report leave-one-out census.
+
+    These values define the measured population and the positive control. They
+    are evaluation policy, not identity rules: the diagnosis engine never reads
+    them.
+    """
+
+    report_kinds: list[Literal["discussion", "issue"]] = Field(
+        default_factory=_default_holdout_kinds
+    )
+    assumed_version: str | None = None
+    positive_control_error: str | None = None
+    case_version_source: Literal["fixed", "report"] = "fixed"
+    report_version_patterns: list[str] = Field(default_factory=list)
+
+
 class RepoProfile(BaseModel):
     repo: str
     clone_url: str | None = None
@@ -46,6 +103,10 @@ class RepoProfile(BaseModel):
     support_surfaces: SupportSurfaces = Field(default_factory=SupportSurfaces)
     version: VersionPolicy = Field(default_factory=VersionPolicy)
     docs: DocsPolicy = Field(default_factory=DocsPolicy)
+    local_context: LocalContextPolicy = Field(default_factory=LocalContextPolicy)
+    seed_objects: SeedObjectsPolicy = Field(default_factory=SeedObjectsPolicy)
+    reviewed_incidents: list[ReviewedIncidentPolicy] = Field(default_factory=list)
+    holdout: HoldoutPolicy = Field(default_factory=HoldoutPolicy)
     error_patterns: list[str] = Field(default_factory=list)
     environment: list[str] = Field(default_factory=list)
     notes: str | None = None

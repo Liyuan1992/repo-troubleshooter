@@ -32,7 +32,49 @@ environment:
   - gpu_model
   - os
 
+local_context:
+  core_packages:
+    - vllm
+  runtimes:
+    - python
+
+# Frozen evidence seeds keep the evaluation reproducible without walking all
+# 17k+ historical issues and 36k+ pull requests on every clean install.
+seed_objects:
+  issues:
+    - 6461
+  pull_requests:
+    - 6463
+
+reviewed_incidents:
+  - key: metrics-endpoint-missing-0.5.2
+    issue: 6461
+    pull_request: 6463
+    merge_commit: 6366efc67b0aedd2c1721c14385370e50b297fb3
+    first_release: v0.5.3
+    reported_versions:
+      - 0.5.2
+    notes: >
+      Human-reviewed frozen chain: issue 6461 reports /metrics returning 404
+      in 0.5.2 and working in 0.5.1; PR 6463 fixes that issue; v0.5.3 is
+      the first release containing its merge commit.
+
+holdout:
+  report_kinds:
+    - issue
+  assumed_version: 0.5.2
+  case_version_source: report
+  report_version_patterns:
+    - '(?im)^\s*vLLM\s+Version\s*:\s*v?([0-9]+(?:\.[0-9A-Za-z]+)+(?:[+-][0-9A-Za-z.-]+)?)'
+    - '(?im)^\s*[-*]\s*\*\*vLLM\*\*\s*:\s*v?([0-9]+(?:\.[0-9A-Za-z]+)+(?:[+-][0-9A-Za-z.-]+)?)'
+    - '(?im)^\s*vllm==v?([0-9]+(?:\.[0-9A-Za-z]+)+(?:[+-][0-9A-Za-z.-]+)?)'
+  positive_control_error: >
+    No Prometheus metrics are exposed at /metrics after upgrading to vLLM
+    0.5.2; GET /metrics returns 404 Not Found.
+
 notes: >
   Structurally different from deepseek-harness on purpose (Issues + PRs present,
-  Discussions secondary). If onboarding this repo requires core retrieval or
-  evidence changes rather than profile changes, the design is not general yet.
+  Discussions secondary). Onboarding exposed generic gaps in Issue/PR ingest,
+  native close/merge relations, API-route identity and large-repository mirrors;
+  those capabilities live in the core while this file contains only vLLM policy
+  and the frozen reviewed evidence seed.
