@@ -7,6 +7,7 @@ __pycache__/
 .env.local
 data/private/
 evals/reports/*.json
+evals/reports/*.txt
 evals/reports/*.md
 *.log
 dist/

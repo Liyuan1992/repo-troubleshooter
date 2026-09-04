@@ -1319,8 +1319,75 @@ ruff, format and mypy clean.
 
 **Remaining target.** The confirmation is only as good as the reading it shows.
 `unread_claims` is capped at six entries for legibility, and a very long report
-can therefore be agreed to without every unread sentence being visible. The
-third step - real-report sampling and a stated threat model - is not started.
+can therefore be agreed to without every unread sentence being visible - carried
+in `docs/known_bypasses.md`.
+
+**Blockers.** None known, with the meaning given in section 21.
+
+---
+
+## 24. What counts as done
+
+**Current fact.** *The third of three decisions taken by the project owner. The
+first two changed where authority comes from; this one changes what "passing"
+means.*
+
+Acceptance was being judged on adversarial input: a reviewer wrote a sentence
+shape the reader had not seen, and each one that got through was a blocker. Every
+such finding was real. The supply of them is also unbounded - the writer is a
+person who knows English, the reader is shallow parsing - so judged that way
+there is no state in which this tool is finished.
+
+The criterion is now measured on the population the tool is for. `docs/threat_model.md`
+says who that is, what is in scope, and - explicitly - that adversarially
+constructed input is not. That is defensible only because of sections 22 and 23:
+a misreading now costs a wrong *proposal*, which the reader sees and rejects,
+rather than a wrong instruction.
+
+**The measurement.** `evals/holdout.py` samples real reports out of the synced
+corpus and asks about each one **with that report removed from the evidence**,
+inside a transaction it rolls back. With the report still present it matches
+itself and nothing is learned; removed, the honest answer for most reports is
+"no incident here I know of", and anything else is a duplicate or a false
+identity.
+
+| gate | measured | threshold |
+|---|---|---|
+| `false_proposal_rate` | **0.00** (0/60) | ≤ 0.05, enforced - the run exits non-zero above it |
+| `false_identity_rate` | **0.25** (15/60) | tracked, no threshold yet |
+
+**Read, not assumed.** The 15 matches are listed and judged one by one in
+`evals/holdout_judgement.md`: **4 are the same incident, 3 are borderline, 8 are
+wrong**. So the estimate behind the 0.25 upper bound is roughly 0.13-0.18. No
+threshold is set on it, because one sample of one repository is not a basis for
+setting one, and a number chosen to be satisfied by today's measurement would be
+decoration.
+
+**And the 0.00 is not reassuring by itself.** None of the 15 reached a version
+action because the incidents they matched carry no released fix to point at - the
+version gate stopped them, not the identity gate. Had those incidents had
+releases, some of the eight wrong matches would have become proposals. That is
+written into the judgement file rather than left for a reader to notice.
+
+**What the measurement found.** Five of the eight wrong matches are not incident
+reports at all - `有没有可自定义重试时间的插件`, `怎么在不动旧版本的情况下更新版本？`,
+`[Ideas] edit 工具是否应该…` - they describe a wish, not a failure. Nothing in the
+pipeline yet asks whether a report describes a failure at all. That is the
+clearest improvement lead in this document, and it is recorded in
+`docs/known_bypasses.md` rather than acted on here.
+
+**Adversarial findings after this point** stay in the suite as regressions. What
+changes is their standing: a new phrasing that gets past the reader is a defect
+recorded in `docs/known_bypasses.md`, not a blocker. A blocker is a path to a
+wrong action, which now needs the authorisation gate to fail as well.
+
+**Verification evidence.** `uv run python evals/holdout.py --sample 60 --seed
+20260904` → `false_identity_rate 0.25`, `false_proposal_rate 0.00`, exit 0; the
+threshold is enforced in the script and the run is part of the live CI block.
+The judgement of all 15 pairs is committed. Developer suite unchanged at 70/71.
+
+**Remaining target.** One repository, one sample, one seed. A second repository
+would say whether 0.13-0.18 is a property of the engine or of this corpus.
 
 **Blockers.** None known, with the meaning given in section 21.
 
