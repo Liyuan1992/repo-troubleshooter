@@ -22,7 +22,13 @@ authorisation gate to fail as well.
 |---|---|---|
 | `para-boot-graph-user-voice` | a rewrite sharing no vocabulary with the incident is missed | long-standing; needs a semantic channel, not a looser gate |
 | A report whose identifying evidence is *only* inside a fence | abstains; the same trace indented under a neutral introduction still answers | deliberate. Asserted by `test_a_report_whose_only_evidence_is_fenced_abstains` |
-| Feature requests and questions are treated as incident reports | five of the eight wrong matches in the holdout are wishes, not failures, matched to bug reports | open, and the clearest lead: nothing yet asks whether a report describes a failure at all |
+| Feature requests and questions are treated as incident reports | in the 499-report census, `#1648 不支持打断模式吗` - a question about steering - was proposed against an unrelated bug; in the earlier 60-report adjudication four of eight wrong matches were wishes rather than failures | open, and the clearest lead: nothing yet asks whether a report describes a failure at all |
+
+## Open — delivery
+
+| what | what it costs | status |
+|---|---|---|
+| The `Live evaluation suite` CI step has never executed | `pytest -m live`, `evals/runner.py` and `evals/holdout.py` have only ever run on one machine | open. It syncs 200 discussions while every number is measured against 550, the eval cases name specific upstream artifacts a 200-sync may not contain, and whether `secrets.GITHUB_TOKEN` can read another repository's Discussions is untested. See `docs/status.md` §28 |
 
 ## Closed
 

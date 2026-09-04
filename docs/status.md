@@ -415,13 +415,24 @@ run a single migration pass this list for several rounds
 **Verification evidence.** Commands and outputs are listed in the iteration report,
 each checked by exit code rather than by reading the tail of the output.
 
-**Remaining target.** A green CI run on a pushed commit, and an independent
-hidden evaluation run by the evaluator - no such result is claimed here.
+**External CI has now run.** The repository was pushed to
+`Liyuan1992/repo-troubleshooter` and the workflow executed on GitHub's runners:
+run [33863041642](https://github.com/Liyuan1992/repo-troubleshooter/actions/runs/33863041642), commit `45c7511`, conclusion **success** in 1m16s.
+Every step passed on a machine that is not this one - lint, format, strict
+mypy, unit tests, a migration from an empty database, the database tests, the
+packaging smoke test, and the installed wheel building a schema from an empty
+database against the job's own PostgreSQL service.
 
-**Blockers.** `blocker: no remote configured` - `git remote -v` is empty, and
-pushing is the user's decision. The workflow (lint, format, strict mypy, unit
-tests, fresh migration, database tests, packaging + MCP smoke) is committed but
-has never executed anywhere.
+**What that run did not cover.** The `Live evaluation suite` step was **skipped**,
+as designed: it is gated on `vars.RUN_LIVE_EVALS`, which is unset. So the live
+tests, `evals/runner.py` and `evals/holdout.py` have still only ever run on this
+machine. See section 28 for why enabling it is not a formality.
+
+**Remaining target.** An independent hidden evaluation run by the evaluator - no
+such result is claimed here - and a live CI block that could pass on the corpus
+CI is able to sync.
+
+**Blockers.** None. The remote exists and the default job is green.
 
 ---
 
@@ -915,8 +926,9 @@ with tests that do not have a window. Writing a boundary down and then writing
 `Blockers: None` under it was wrong, and this section should have said so.
 
 **Blockers.** None new. The unsafe-action figures continue to describe the
-committed set only; the hidden acceptance set is not ours to run, and no remote
-is configured, so there is still no external CI evidence.
+committed set only; the hidden acceptance set is not ours to run. *(No remote
+was configured when this was written; section 28 records the CI run that closed
+that gap.)*
 
 ---
 
@@ -985,8 +997,9 @@ on a distance or a list of words that a report can step outside of by writing
 one more adjective.
 
 **Blockers.** None new. The unsafe-action figures continue to describe the
-committed set only; the hidden acceptance set is not ours to run, and no remote
-is configured, so there is still no external CI evidence.
+committed set only; the hidden acceptance set is not ours to run. *(No remote
+was configured when this was written; section 28 records the CI run that closed
+that gap.)*
 
 ---
 
@@ -1196,8 +1209,8 @@ no words; indented blocks do.
 **Blockers.** None known. That sentence means: no input demonstrated to produce
 an unsafe action is currently unfixed - it does not mean none exists, and the
 last four rounds each found some. The unsafe-action figures describe the
-committed set; the hidden acceptance set is not ours to run; no remote is
-configured, so there is still no external CI evidence.
+committed set; the hidden acceptance set is not ours to run. *(No remote was
+configured when this was written; see section 28.)*
 
 ---
 
@@ -1272,7 +1285,8 @@ could only be a proposal.
 
 **Blockers.** None known, with the same meaning as in section 21: no input
 demonstrated to produce an unsafe action is currently unfixed. The hidden
-acceptance set is not ours to run; no remote is configured.
+acceptance set is not ours to run. *(No remote was configured when this was
+written; see section 28.)*
 
 ---
 
@@ -1492,8 +1506,8 @@ tests pass; evals 70/71; ruff, format, mypy clean.
 nothing yet asks whether a report describes a failure at all - which is where
 half the adjudicated errors come from.
 
-**Blockers.** None known, with the meaning given in section 21. Still no remote,
-so the corrected CI has not run anywhere.
+**Blockers.** None known, with the meaning given in section 21. *(The corrected
+CI has since run; see section 28.)*
 
 ---
 
@@ -1580,9 +1594,9 @@ spread across seeds (0.118 to 0.30) says so.
 **Blockers.** None known, in the sense given in section 21 - no input
 demonstrated to produce a wrong *action* is unfixed.
 
-**Delivery evidence still missing.** The repository has no remote, so no CI run
-has ever executed: the workflow is a file, not a result. Nothing in this
-document may be read as "CI passed".
+**Delivery evidence still missing.** *(Closed in section 28: the repository was
+pushed and the workflow ran.)* At the time this was written the repository had
+no remote, so no CI run had executed.
 
 ---
 
@@ -1651,8 +1665,85 @@ against an unrelated bug, and that class keeps appearing.
 
 **Blockers.** None known, in the sense given in section 21.
 
-**Delivery evidence still missing.** No remote, so no CI run has ever executed.
-The workflow is a file, not a result.
+**Delivery evidence still missing.** *(Closed in section 28.)* At the time this
+was written no CI run had executed.
+
+---
+
+## 28. External delivery evidence
+
+**Current fact.** The workflow has run on a machine that is not this one.
+
+Repository: [`Liyuan1992/repo-troubleshooter`](https://github.com/Liyuan1992/repo-troubleshooter),
+public, at the owner's decision. Run [33863041642](https://github.com/Liyuan1992/repo-troubleshooter/actions/runs/33863041642) on commit `45c7511`,
+job `check`, **success**, 1m16s. Every step green:
+
+| step | result |
+|---|---|
+| Install dependencies from the lockfile (`uv sync --frozen`) | pass |
+| Lint (`ruff check .`) | pass |
+| Formatting (`ruff format --check .`) | pass |
+| Types, strict (`mypy src`) | pass |
+| Unit tests, no database, no network | pass |
+| Fresh migration from zero (`db init`, `db ping`) | pass |
+| Database tests (migration replay, idempotence) | pass |
+| Packaging smoke test (build, clean venv, install, `--help`, `--check`) | pass |
+| The installed wheel builds a schema from an empty database | pass |
+| Live evaluation suite | **skipped** |
+
+That last row matters as much as the nine above it.
+
+### What CI has not run, and why it is not a formality
+
+`Live evaluation suite` is gated on `vars.RUN_LIVE_EVALS`, which is unset. So
+`pytest -m live`, `evals/runner.py` and `evals/holdout.py` have still **only ever
+run on this machine**. Everything this document says about 70/71, about the
+census, about the holdout rates, rests on local runs.
+
+Turning the variable on would not simply extend the evidence, and it is worth
+being plain about why rather than leaving a switch that looks flippable:
+
+* the live block syncs **200** discussions; the corpus every number here is
+  measured against holds **550**. Section 26 already says those are not
+  comparable;
+* the eval expectations name specific upstream artifacts - discussion #5084, a
+  commit, a release. Whether a 200-discussion sync even contains them is not
+  known, and if it does not, `evals/runner.py` fails for a reason that says
+  nothing about the engine;
+* `RT_GITHUB_TOKEN` is set from `secrets.GITHUB_TOKEN`, which is scoped to *this*
+  repository. Whether it can read another repository's Discussions through the
+  GraphQL API has not been tested.
+
+So the live block is committed, has never executed anywhere, and would probably
+fail on the corpus CI can build. That is a defect in the delivery pipeline, not
+a gap in the engine, and it is recorded here rather than closed by flipping a
+variable and hoping.
+
+### Before pushing, run locally
+
+Every non-live step of the workflow was executed on this machine first, in the
+workflow's own order and with its own commands, against a database created for
+that purpose so the measurement corpus was untouched: nine steps, nine exit
+zeros. The CI run then reproduced all nine on Ubuntu with its own PostgreSQL
+service. The local run is not evidence of CI; it is what made the CI run
+predictable.
+
+### One thing the push does that this document should say plainly
+
+The repository is public, and its evaluation cases quote **real upstream
+discussion text** - other people's bug reports, in their own words. That was
+raised before pushing and the owner decided to publish. It is noted here so the
+decision is visible rather than implicit in a URL.
+
+**Verification evidence.** `gh run view 33863041642` reports conclusion
+`success` for commit `45c7511`. The step list above is that run's, not a
+description of the file.
+
+**Remaining target.** A live CI block that can pass on the corpus CI is able to
+sync; and an independent hidden evaluation, which remains the evaluator's to run
+and is not claimed here.
+
+**Blockers.** None.
 
 ---
 

@@ -336,6 +336,7 @@ Git 交付要求：
 3. 记录最终 commit SHA。
 4. 如果用户配置了 remote 并授权 push，则 push 后等待真实 CI 完成并确认绿灯。
 5. 如果仍无 remote，明确写 `blocker: no remote configured`，不得说 CI 已通过。
+   *(2026-09-04：remote 已建立，默认 job 在 GitHub 上跑通；live 块仍被跳过，见 `docs/status.md` §28。)*
 6. 更新 `docs/status.md`，继续分开写 current fact、verification evidence、remaining target、
    blockers。
 
