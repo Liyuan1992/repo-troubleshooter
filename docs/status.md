@@ -1548,6 +1548,10 @@ borderline, 3 wrong**. Pooled over the three seeds:
 | `adjudicated_false_proposal_rate` | 4/300 = **0.013** | 4/21 = **0.19** |
 | upper bound, borderline counted wrong | 5/300 = 0.017 | 5/21 = 0.238 |
 
+*(Section 27 supersedes this table twice over: `#46` was adjudicated wrongly
+here, and the baseline is now a census of all 499 eligible reports rather than
+pooled seeds.)*
+
 **Read the conditional one.** The overall rate is low mainly because a version
 action is rarely reachable. When one is, roughly **one proposal in five points
 at a different incident**. That is the first number this project has that says
@@ -1579,6 +1583,76 @@ demonstrated to produce a wrong *action* is unfixed.
 **Delivery evidence still missing.** The repository has no remote, so no CI run
 has ever executed: the workflow is a file, not a result. Nothing in this
 document may be read as "CI passed".
+
+---
+
+## 27. A census, and a verdict I got wrong
+
+**Current fact.** *Measurement only, again. No identity-parsing changes.*
+
+### #46 was not the same incident
+
+Section 26 counted `#46 无法启动 dsh` → `#1916 无法绑定非 127.0.0.1 的 IP 地址`
+as a correct match, because both bodies contain `failed to apply loader entry`.
+Reading past that line:
+
+* #46 — `(@deepseek-ai/cordis-plugin-hmr): --expose-internals is required for
+  HMR service`
+* #1916 — `(@deepseek-ai/dsh-host-webserver): invalid config: $.host expected
+  "127.0.0.1" | "0.0.0.0" but got "100.90.80.70"`
+
+Two different failures sharing a generic outer wrapper. **Judging them the same
+on that wrapper is the exact error this project spends its time refusing to make
+in code**, made by hand in the judgement of that code. Corrected to wrong, and
+every adjudicated number moved with it.
+
+### The baseline is now a census
+
+All 499 eligible reports, not a sample - so there is no sampling error left
+inside this repository, and more seeds would add nothing. What a second
+repository would answer is whether this generalises, which is a different
+question and is not answered here.
+
+| | census (499) |
+|---|---|
+| matched another report | 100 |
+| `proposal_opportunity_count` | 32 |
+| machine proposals | 6 |
+| `other_report_proposal_rate_overall` | 0.0120 |
+| `other_report_proposal_rate_given_opportunity` | **0.1875** |
+| adjudicated: 5 wrong, 1 borderline | |
+| `adjudicated_false_proposal_rate` overall | **0.0100** (upper 0.0120) |
+| `adjudicated_false_proposal_rate` given opportunity | **0.156** (upper 0.1875) |
+| 95% interval (Wilson) on 5/32 | 0.069 - 0.318 |
+
+When a version action is reachable, about **one proposal in six points at a
+different incident**, and 32 trials cannot say much more precisely than
+"somewhere between 7% and 32%". Still no threshold on it: a census settles
+sampling error, not generalisation, and the second repository is what would.
+
+### The measurement code had no tests
+
+`evals/holdout.py` decides what this project may claim about itself, and it was
+rewritten twice with nothing covering it - while 479 tests covered everything it
+measures. `tests/test_holdout_metrics.py` now covers the arithmetic, without a
+database: which denominator each rate is over, that the conditional rate is
+`null` rather than `0.0` when no opportunity existed, pooling across seeds and
+distinct-versus-drawn report counts, the provenance fields, and the threshold's
+exit decision - including that a failed positive control fails the run whatever
+the rate says. The gate is a pure function now so a test can reach it.
+
+**Verification evidence.** Census of 499, exit 0, positive control reaching a
+proposal. All six proposals read in `evals/holdout_judgement.md`. 502 tests
+pass; evals 70/71; ruff, format and mypy clean.
+
+**Remaining target.** One repository. And nothing yet asks whether a report
+describes a failure at all - `#1648 不支持打断模式吗` is a question, proposed
+against an unrelated bug, and that class keeps appearing.
+
+**Blockers.** None known, in the sense given in section 21.
+
+**Delivery evidence still missing.** No remote, so no CI run has ever executed.
+The workflow is a file, not a result.
 
 ---
 

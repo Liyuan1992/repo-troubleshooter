@@ -70,21 +70,26 @@ call things: it counts proposals pointing at **another report**, and some of
 those are genuine duplicates where proposing is correct. Only a person can
 separate them, so nothing machine-counted is called "false".
 
-| metric | fixture (60) | wide (300) | pooled seeds 11/22/33 | threshold |
-|---|---|---|---|---|
-| `other_report_proposal_rate_overall` | 0.000 (0/60) | 0.0067 (2/300) | 0.020 (6/300) | **≤ 0.05** |
-| `other_report_proposal_rate_given_opportunity` | 0.000 (0/3) | 0.118 (2/17) | 0.286 (6/21) | tracked, none |
-| `proposal_opportunity_count` | 3 | 17 | 21 | — |
-| `other_report_match_rate` | 0.267 | 0.183 | 0.203 | tracked, none |
-| positive control | reaches a proposal | reaches a proposal | reaches a proposal | must, or the run fails |
+The baseline is a **census of all 499 eligible reports**, so there is no
+sampling error left inside this repository. Seeded sub-samples stay as fast
+regressions and are not the basis of any claim.
+
+| metric | census (499) | fixture (60) | threshold |
+|---|---|---|---|
+| `other_report_proposal_rate_overall` | 0.0120 (6/499) | 0.000 (0/60) | **≤ 0.05** |
+| `other_report_proposal_rate_given_opportunity` | 0.1875 (6/32) | 0.000 (0/3) | tracked, none |
+| `proposal_opportunity_count` | 32 | 3 | — |
+| `other_report_match_rate` | 0.2004 (100/499) | 0.267 | tracked, none |
+| positive control | reaches a proposal | reaches a proposal | must, or the run fails |
 
 Adjudicated in `evals/holdout_judgement.md` - the only place a number may be
 called false:
 
-| metric | wide (300) | pooled seeds |
+| metric | census (499) | upper bound |
 |---|---|---|
-| `adjudicated_false_proposal_rate` overall | 0.003 | 0.013 |
-| `adjudicated_false_proposal_rate` given opportunity | 0.059 | **0.19** (upper bound 0.238) |
+| `adjudicated_false_proposal_rate` overall | **0.0100** (5/499) | 0.0120 (6/499) |
+| `adjudicated_false_proposal_rate` given opportunity | **0.156** (5/32) | 0.1875 (6/32) |
+| 95% interval (Wilson) on 5/32 | **0.069 - 0.318** | |
 
 **Two denominators, on purpose.** The overall rate is the product rate: what a
 user of this corpus meets. The conditional rate is the quality rate: of the
@@ -92,11 +97,14 @@ times a version action was reachable, how often it pointed elsewhere.
 `proposal_opportunity_count` is the denominator of the conditional rate only -
 never of the overall one.
 
+**No threshold on the conditional rate**, and not because it is unflattering. A
+census removes sampling error but not the fact that this is one repository, and
+32 trials cannot narrow the interval below roughly 7%-32%. The second repository
+decides whether this generalises; a threshold is worth arguing about after that,
+and it is the project owner's call, not a number picked to be satisfied today.
+
 **The fixture is a regression, not an estimate.** Its 0/60 had three
-opportunities and is not evidence of a system error rate; wider samples from the
-same corpus and the same code do propose. Neither rate has a threshold on the
-conditional side: the counts are small, one corpus is one corpus, and a number
-chosen to be satisfied by today's measurement would be decoration.
+opportunities.
 
 | other gates | current | threshold |
 |---|---|---|

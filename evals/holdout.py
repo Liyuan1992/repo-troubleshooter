@@ -408,6 +408,28 @@ def _pooled(results: list[HoldoutResult]) -> dict[str, Any]:
     }
 
 
+def gate_failures(payload: dict[str, Any]) -> list[str]:
+    """Why this run fails, if it does. Pure, so a test can reach it.
+
+    Two conditions, and the first exists to keep the second honest: if the
+    positive control did not reach a proposal, a low rate is describing the
+    harness rather than the engine, and passing on it would be meaningless.
+    """
+    failures: list[str] = []
+    if not payload["positive_control"]["reaches_a_proposal"]:
+        failures.append(
+            "the positive control did not reach a proposal, so a low rate would "
+            "describe this harness rather than the engine"
+        )
+    measured = payload["other_report_proposal_rate_overall"]["value"]
+    if measured > MAX_OTHER_REPORT_PROPOSAL_RATE:
+        failures.append(
+            f"other_report_proposal_rate_overall {measured} exceeds "
+            f"{MAX_OTHER_REPORT_PROPOSAL_RATE} (docs/threat_model.md)"
+        )
+    return failures
+
+
 def _print(payload: dict[str, Any], result: HoldoutResult) -> None:
     overall = payload["other_report_proposal_rate_overall"]
     conditional = payload["other_report_proposal_rate_given_opportunity"]
@@ -467,18 +489,8 @@ def main() -> int:
     failed = False
     for payload, result in zip(payloads, results, strict=True):
         _print(payload, result)
-        if not payload["positive_control"]["reaches_a_proposal"]:
-            print(
-                "\nFAIL: the positive control did not reach a proposal, so a zero rate "
-                "would describe this harness rather than the engine"
-            )
-            failed = True
-        measured = payload["other_report_proposal_rate_overall"]["value"]
-        if measured > MAX_OTHER_REPORT_PROPOSAL_RATE:
-            print(
-                f"\nFAIL: other_report_proposal_rate_overall {measured} exceeds "
-                f"{MAX_OTHER_REPORT_PROPOSAL_RATE} (docs/threat_model.md)"
-            )
+        for reason in gate_failures(payload):
+            print(f"\nFAIL: {reason}")
             failed = True
 
     if "pooled" in document:
