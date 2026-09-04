@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from repo_troubleshooter.connectors.git.repo import GitRepo
 from repo_troubleshooter.diagnosis.contract import (
+    Authorization,
     Claim,
     DiagnosisRequest,
     DiagnosisResponse,
@@ -38,7 +39,7 @@ from repo_troubleshooter.evidence.packet import EvidencePacket
 from repo_troubleshooter.fingerprint import features as feat
 from repo_troubleshooter.fingerprint.error import ErrorFingerprint, fingerprint
 from repo_troubleshooter.relations.change_resolution import ChangeCandidate, resolve_change
-from repo_troubleshooter.relations.signatures import require_fresh_signatures
+from repo_troubleshooter.relations.signatures import load_features, require_fresh_signatures
 from repo_troubleshooter.retrieval import pipeline
 from repo_troubleshooter.store.models import (
     ContentUnit,
@@ -59,6 +60,7 @@ from repo_troubleshooter.versions.containment import (
     compute_containment,
     version_already_contains,
 )
+from repo_troubleshooter.versions.packages import PackageFamily
 
 
 @dataclass
@@ -193,6 +195,54 @@ def _persist_incident_record(
     }
     session.flush()
     return f"incident:{repo.id}:{fp.signature_hash[:12]}"
+
+
+def _authorize(
+    session: Session,
+    request: DiagnosisRequest,
+    candidate: Any,
+    repo: Repository,
+) -> Authorization:
+    """Did the user state something that authorises acting on this candidate?
+
+    Today there is one source: a package named in `request.packages` that the
+    candidate also names, directly or through the repository's own manifests.
+    A second source - the user confirming the reading echoed back to them -
+    belongs to the next step and will be recorded here the same way.
+
+    Note what is *not* a source: a package read out of the report's prose. That
+    is the whole point of the split. Prose still finds candidates and still
+    refuses them - a contradiction in prose is a reason to stop, and being
+    wrong there costs recall, not safety - but it no longer says yes.
+    """
+    if not request.packages:
+        return Authorization(
+            authorized=False,
+            missing=[
+                "the package you are running, as `--package NAME` - free text can find "
+                "a candidate but does not authorise changing what you run"
+            ],
+        )
+
+    stated = {name.strip().lower() for name in request.packages if name.strip()}
+    candidate_features = load_features(session, candidate.object_id)
+    named = (
+        candidate_features.subject_packages
+        | candidate_features.subject_dependencies
+        | candidate_features.subject_confirmed_non_primary
+        | candidate_features.subject_conflicted
+        | candidate_features.subject_unresolved
+    )
+    family = PackageFamily.load(session, repo.id)
+    if stated & named or family.any_related(stated, named):
+        return Authorization(authorized=True, source="structured_package")
+    return Authorization(
+        authorized=False,
+        missing=[
+            f"you named {sorted(stated)[:3]}, which this incident does not mention; "
+            "nothing you stated ties you to it"
+        ],
+    )
 
 
 def diagnose(
@@ -581,6 +631,33 @@ def diagnose(
         status = "conflicting"
         action.confidence = "low"
 
+    # --- stage 3 needs an authorisation source ------------------------------
+    #
+    # Retrieval and identity run on free text; recommending that someone change
+    # what they run does not. A misreading of prose that can only *find* a
+    # candidate produces a wrong suggestion, which the reader sees and rejects.
+    # One that can authorise an action produces a wrong action. So the two are
+    # separated: the packages the user stated as fields decide whether this
+    # answer may propose a change.
+    authorization = _authorize(session, request, top, repo)
+    if action.type in DiagnosisResponse.VERSION_ACTIONS and not authorization.authorized:
+        authorization.proposed_action = action.type
+        authorization.proposed_target = action.target
+        action = RecommendedAction(
+            type="collect_more_info",
+            rationale=(
+                f"this looks like the same incident, and {action.rationale} - but nothing "
+                "you stated identifies the package you are running, so this is a proposal "
+                "rather than a recommendation"
+            ),
+            confidence="low",
+            evidence_ids=action.evidence_ids,
+        )
+        if status == "probable":
+            # Not "confirmed" and not a refusal: the incident is a real match,
+            # but nothing authorises acting on it yet.
+            status = "insufficient_evidence"
+
     stages = StageReport(
         retrieved_candidates=len(outcome.candidates),
         accepted_same_incident=True,
@@ -597,6 +674,7 @@ def diagnose(
         status=status,  # type: ignore[arg-type]
         environment=environment,
         stages=stages,
+        authorization=authorization,
         incident=incident,
         applicability=verdict.to_json(),
         claims=claims,

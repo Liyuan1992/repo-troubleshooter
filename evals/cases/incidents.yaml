@@ -39,6 +39,7 @@ cases:
     core_version: 0.1.2-alpha.1
     runtime: node 24.11.1
     os: windows
+    packages: ["@deepseek-ai/dsh-client-modules"]
   expect:
     status: probable
     action: upgrade
@@ -298,3 +299,41 @@ cases:
     forbid_phrases:
     - verified fixed
     - runtime verified
+
+# --- what free text alone may reach --------------------------------------
+#
+# Both of these are the real incident, correctly identified. Neither states a
+# package, so neither may recommend changing what the user runs: prose finds
+# candidates, structured input authorises acting on one. The incident, the
+# evidence and the proposal are all still returned - what changes is that the
+# answer is a proposal.
+- id: auth-prose-only-is-a-proposal
+  kind: incident
+  subsystem: loader / client-modules
+  verified_upstream: true
+  upstream:
+    discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/5084
+  query:
+    error: 'dsh web starts but __DSH_BOOT__ has zero entries and zero batches; client-modules reports HTML did not preload @deepseek-ai/dsh-client-modules/client.js, and the host throws TypeError: e.indexOf is not a function'
+    core_version: 0.1.2-alpha.1
+    runtime: node 24.11.1
+  expect:
+    matched_incident: true
+    action_in: [collect_more_info]
+    forbid_actions: [upgrade, downgrade, migrate, config_change, workaround]
+
+- id: auth-unrelated-package-is-a-proposal
+  kind: incident
+  subsystem: loader / client-modules
+  verified_upstream: true
+  upstream:
+    discussion: https://github.com/deepseek-ai/deepseek-harness/discussions/5084
+  query:
+    error: 'dsh web starts but __DSH_BOOT__ has zero entries and zero batches; client-modules reports HTML did not preload @deepseek-ai/dsh-client-modules/client.js, and the host throws TypeError: e.indexOf is not a function'
+    core_version: 0.1.2-alpha.1
+    runtime: node 24.11.1
+    packages: ["@nebula/theme-engine"]
+  expect:
+    matched_incident: true
+    action_in: [collect_more_info]
+    forbid_actions: [upgrade, downgrade, migrate, config_change, workaround]

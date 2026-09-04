@@ -15,6 +15,11 @@ base_query:
     packages/loader/src/internal.ts while resolving a module.
   runtime: node 24.11.1
   os: windows
+  # Stated, not read out of the prose. Every row here is a user who knows what
+  # they are running and is asking whether their version has the fix - which is
+  # the question the whole tool exists to answer. Free text still finds the
+  # incident; this is what allows an answer to recommend acting on it.
+  packages: ["@deepseek-ai/dsh-client-modules"]
 
 # The change is first contained in this release (checked upstream, and re-derived
 # by git ancestry at query time).

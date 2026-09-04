@@ -129,7 +129,16 @@ class TestPublicContract:
 class TestEvaluatorCases:
     def test_old_release_recommends_the_first_containing_release(self):
         payload = diagnose_json(
-            "--error", LOADER_ERROR, "--version", "0.1.2-alpha.1", "--runtime", "node 24.11.1"
+            "--error",
+            LOADER_ERROR,
+            "--version",
+            "0.1.2-alpha.1",
+            "--runtime",
+            "node 24.11.1",
+            # Stated, not read out of the error text: prose finds the incident,
+            # this is what allows the answer to recommend acting on it.
+            "--package",
+            "@deepseek-ai/dsh-client-modules",
         )
         action = payload["recommended_action"]
         assert action["type"] == "upgrade"

@@ -185,6 +185,7 @@ def _run(
     core_version: str | None,
     runtime: str | None,
     os_name: str | None,
+    packages: list[str] | None = None,
 ) -> tuple[DiagnosisResponse, float]:
     request = DiagnosisRequest(
         repo=repo,
@@ -192,6 +193,7 @@ def _run(
         core_version=core_version,
         runtime=runtime,
         os=os_name,
+        packages=list(packages or []),
     )
     started = time.perf_counter()
     response, _packet, _debug = diagnose(request, session, persist=False)
@@ -214,6 +216,7 @@ def run_incidents(session: Session) -> list[CaseResult]:
             core_version=query.get("core_version"),
             runtime=query.get("runtime"),
             os_name=query.get("os"),
+            packages=query.get("packages"),
         )
         expect = case.get("expect", {})
         failures = _check_common(expect, response)
@@ -247,6 +250,7 @@ def run_paraphrases(session: Session) -> list[CaseResult]:
             core_version=case.get("core_version", defaults.get("core_version")),
             runtime=case.get("runtime", defaults.get("runtime")),
             os_name=case.get("os", defaults.get("os")),
+            packages=case.get("packages", defaults.get("packages")),
         )
         failures = _check_common(case.get("expect", {}), response)
         results.append(
@@ -281,6 +285,7 @@ def run_regressions(session: Session) -> list[CaseResult]:
             core_version=case.get("core_version", defaults.get("core_version")),
             runtime=case.get("runtime", defaults.get("runtime")),
             os_name=case.get("os", defaults.get("os")),
+            packages=case.get("packages", defaults.get("packages")),
         )
         failures = _check_common(shared, response)
         if response.recommended_action.target:
@@ -314,6 +319,7 @@ def run_negatives(session: Session) -> list[CaseResult]:
             core_version=defaults.get("core_version"),
             runtime=defaults.get("runtime"),
             os_name=defaults.get("os"),
+            packages=defaults.get("packages"),
         )
         failures = _check_common(shared, response)
         if response.recommended_action.target:
@@ -346,6 +352,7 @@ def run_perturbations(session: Session) -> list[CaseResult]:
             core_version=case.get("core_version"),
             runtime=case.get("runtime", base.get("runtime")),
             os_name=case.get("os", base.get("os")),
+            packages=case.get("packages", base.get("packages")),
         )
         failures = _check_common(case.get("expect", {}), response)
         results.append(

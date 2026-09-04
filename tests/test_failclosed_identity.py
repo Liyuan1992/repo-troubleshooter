@@ -223,7 +223,20 @@ PHRASINGS: list[tuple[str, str]] = [
 CASES = [pytest.param(f"{clause}. {BOOT_SYMPTOM}", id=case_id) for case_id, clause in PHRASINGS]
 
 
-def cli_diagnose(error: str, *, version: str = "0.1.2-alpha.1", debug: bool = False) -> dict:
+# The package the user is running, stated as a field. Free text finds
+# candidates; stating this is what authorises advice, so every case here runs
+# with it - which makes the negatives *harder*: they must still refuse even
+# though the user has named the package the incident is about.
+STATED_PACKAGE = "@deepseek-ai/dsh-client-modules"
+
+
+def cli_diagnose(
+    error: str,
+    *,
+    version: str = "0.1.2-alpha.1",
+    debug: bool = False,
+    packages: tuple[str, ...] = (STATED_PACKAGE,),
+) -> dict:
     executable = BIN / f"repo-troubleshooter{EXE}"
     argv = (
         [str(executable)]
@@ -245,6 +258,8 @@ def cli_diagnose(error: str, *, version: str = "0.1.2-alpha.1", debug: bool = Fa
         "--version",
         version,
     ]
+    for name in packages:
+        argv += ["--package", name]
     if debug:
         argv.append("--debug")
     proc = subprocess.run(  # noqa: S603
@@ -261,7 +276,12 @@ def cli_diagnose(error: str, *, version: str = "0.1.2-alpha.1", debug: bool = Fa
     return json.loads(proc.stdout)
 
 
-def stdio_mcp_diagnose(error: str, *, version: str = "0.1.2-alpha.1") -> dict[str, Any]:
+def stdio_mcp_diagnose(
+    error: str,
+    *,
+    version: str = "0.1.2-alpha.1",
+    packages: tuple[str, ...] = (STATED_PACKAGE,),
+) -> dict[str, Any]:
     """A freshly launched `repo-troubleshooter-mcp` process, spoken to over stdio."""
     from mcp import Client
     from mcp.client.stdio import StdioServerParameters
@@ -277,7 +297,13 @@ def stdio_mcp_diagnose(error: str, *, version: str = "0.1.2-alpha.1") -> dict[st
     async def run() -> dict[str, Any]:
         async with Client(params) as client:
             result = await client.call_tool(
-                "diagnose", {"repo": REPO, "error": error, "core_version": version}
+                "diagnose",
+                {
+                    "repo": REPO,
+                    "error": error,
+                    "core_version": version,
+                    "packages": list(packages),
+                },
             )
             payload = result.structured_content
             if payload is None:
@@ -731,6 +757,50 @@ class TestElevenPhrasingsThroughBothSurfaces:
         payload = cli_diagnose(report)
         assert payload["recommended_action"]["type"] not in UNSAFE
         assert payload["stages"]["stopped_at"] == "retrieved_candidate"
+
+    REAL_SYMPTOM = (
+        "dsh web starts but __DSH_BOOT__ has zero entries and zero batches; "
+        "client-modules reports HTML did not preload "
+        "@deepseek-ai/dsh-client-modules/client.js, and the host throws "
+        "TypeError: e.indexOf is not a function"
+    )
+
+    def test_free_text_alone_proposes_but_does_not_recommend(self):
+        """The reason free text is allowed to be read at all.
+
+        This report is the incident, correctly identified, with every piece of
+        evidence the authorised version has. What it does not have is the user
+        saying which package they run - so the answer is a proposal, and the
+        action it *would* have recommended is recorded rather than issued.
+
+        This is what makes a misreading of prose survivable. Getting a claim
+        wrong can now cost a wrong suggestion, which the reader sees and
+        rejects, instead of a wrong instruction to upgrade.
+        """
+        payload = cli_diagnose(self.REAL_SYMPTOM, packages=())
+        assert payload["incident"]["matched"] is True
+        assert payload["recommended_action"]["type"] not in UNSAFE
+        assert payload["stages"]["stopped_at"] == "accepted_same_incident"
+        authorization = payload["authorization"]
+        assert authorization["authorized"] is False
+        assert authorization["proposed_action"] == "upgrade"
+        assert authorization["proposed_target"] == "dsh-v0.1.2-alpha.2"
+        assert authorization["missing"]
+
+    def test_naming_an_unrelated_package_does_not_authorise_either(self):
+        """Stating *a* package is not stating *this* one."""
+        payload = cli_diagnose(self.REAL_SYMPTOM, packages=("@nebula/theme-engine",))
+        assert payload["incident"]["matched"] is True
+        assert payload["recommended_action"]["type"] not in UNSAFE
+        assert payload["authorization"]["authorized"] is False
+
+    def test_both_surfaces_agree_about_authorisation(self):
+        """MCP is not a way around the gate."""
+        cli = cli_diagnose(self.REAL_SYMPTOM, packages=())
+        mcp = stdio_mcp_diagnose(self.REAL_SYMPTOM, packages=())
+        assert cli["authorization"]["authorized"] is False
+        assert mcp["authorization"]["authorized"] is False
+        assert mcp["recommended_action"]["type"] == cli["recommended_action"]["type"]
 
     def test_a_quotation_alongside_a_stated_report_costs_nothing(self):
         """The presence of a quotation does not by itself cost a positive.

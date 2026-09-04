@@ -42,7 +42,20 @@ REAL_SYMPTOM = (
 )
 
 
-def cli_diagnose(error: str, *, version: str = "0.1.2-alpha.1", debug: bool = False) -> dict:
+# The package the user is running, stated as a field. Free text finds
+# candidates; stating this is what authorises advice, so every case here runs
+# with it - which makes the negatives *harder*: they must still refuse even
+# though the user has named the package the incident is about.
+STATED_PACKAGE = "@deepseek-ai/dsh-client-modules"
+
+
+def cli_diagnose(
+    error: str,
+    *,
+    version: str = "0.1.2-alpha.1",
+    debug: bool = False,
+    packages: tuple[str, ...] = (STATED_PACKAGE,),
+) -> dict:
     """Run the installed console script as a subprocess and parse its contract."""
     executable = BIN / f"repo-troubleshooter{EXE}"
     argv = (
@@ -52,6 +65,8 @@ def cli_diagnose(error: str, *, version: str = "0.1.2-alpha.1", debug: bool = Fa
     )
     argv += ["diagnose", "--repo", REPO, "--json", "--no-persist"]
     argv += ["--error", error, "--version", version]
+    for name in packages:
+        argv += ["--package", name]
     if debug:
         argv.append("--debug")
     proc = subprocess.run(  # noqa: S603
@@ -68,7 +83,12 @@ def cli_diagnose(error: str, *, version: str = "0.1.2-alpha.1", debug: bool = Fa
     return json.loads(proc.stdout)
 
 
-def mcp_diagnose(error: str, *, version: str = "0.1.2-alpha.1") -> dict[str, Any]:
+def mcp_diagnose(
+    error: str,
+    *,
+    version: str = "0.1.2-alpha.1",
+    packages: tuple[str, ...] = (STATED_PACKAGE,),
+) -> dict[str, Any]:
     """Call the MCP tool over the real protocol."""
     from mcp import Client
 
@@ -77,7 +97,13 @@ def mcp_diagnose(error: str, *, version: str = "0.1.2-alpha.1") -> dict[str, Any
     async def run() -> dict[str, Any]:
         async with Client(server) as client:
             result = await client.call_tool(
-                "diagnose", {"repo": REPO, "error": error, "core_version": version}
+                "diagnose",
+                {
+                    "repo": REPO,
+                    "error": error,
+                    "core_version": version,
+                    "packages": list(packages),
+                },
             )
             payload = result.structured_content
             if payload is None:

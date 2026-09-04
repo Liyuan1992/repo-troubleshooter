@@ -116,6 +116,8 @@ class TestAnInstalledWheelCanWork:
                 REAL_SYMPTOM,
                 "--version",
                 "0.1.2-alpha.1",
+                "--package",
+                "@deepseek-ai/dsh-client-modules",
             ]
         )
         assert result.returncode == 0, result.stdout + result.stderr
@@ -141,7 +143,12 @@ class TestAnInstalledWheelCanWork:
                     await session.initialize()
                     result = await session.call_tool(
                         "diagnose",
-                        {"repo": REPO, "error": REAL_SYMPTOM, "core_version": "0.1.2-alpha.1"},
+                        {
+                            "repo": REPO,
+                            "error": REAL_SYMPTOM,
+                            "core_version": "0.1.2-alpha.1",
+                            "packages": ["@deepseek-ai/dsh-client-modules"],
+                        },
                     )
                     payload = result.structured_content
                     if payload is None:

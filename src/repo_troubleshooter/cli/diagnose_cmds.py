@@ -128,6 +128,16 @@ def register(
         config_key: Annotated[
             list[str] | None, typer.Option("--config-key", help="Config KEY NAME only, repeatable")
         ] = None,
+        package: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--package",
+                help=(
+                    "A package you are running, by name. Repeatable. "
+                    "Free text finds candidates; this is what authorises advice."
+                ),
+            ),
+        ] = None,
         as_json: Annotated[
             bool, typer.Option("--json", help="Machine-readable contract output")
         ] = False,
@@ -168,6 +178,7 @@ def register(
             os=os_name,
             plugins=plugins,
             config_keys=list(config_key or []),
+            packages=list(package or []),
         )
 
         from repo_troubleshooter.relations.signatures import SignaturesStale

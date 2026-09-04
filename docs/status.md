@@ -355,11 +355,11 @@ database that is down, empty, foreign or stale fails within ~3 seconds with a
 command to run, never a traceback; MCP returns a structured error instead of
 hanging.
 
-**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **467
+**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **470
 passed**, measured. The suite has grown each round - 118, 146, 157, 178, 188,
-216, 263, 291, 320, 354, 355, 374, 402, 438, 462, now 467 - so a number quoted
-from an earlier round no longer matches, and several places in this document had
-gone on quoting one.
+216, 263, 291, 320, 354, 355, 374, 402, 438, 462, 467, now 470 - so a number
+quoted from an earlier round no longer matches, and several places in this
+document had gone on quoting one.
 `tests/test_mcp_roundtrip.py`
 drives a real MCP SDK client: lists tools, calls both, asserts CLI/MCP parity on
 status, action, target, `incident.matched`, `stages.stopped_at` and the
@@ -404,7 +404,7 @@ design. The second repository has not been started.
 ## 7. Delivery
 
 **Current fact.** Local gates all pass: `uv sync --extra dev --frozen`,
-`ruff check .`, `ruff format --check .`, `mypy src`, `pytest` (467 tests),
+`ruff check .`, `ruff format --check .`, `mypy src`, `pytest` (470 tests),
 `evals/runner.py`, `docker compose up -d`, `db init`, `db ping`, `status`,
 `uv build`, and a clean-venv install of the built wheel running `db init`, a
 real `diagnose` against the synced database, and the same `diagnose` over stdio
@@ -1198,6 +1198,77 @@ an unsafe action is currently unfixed - it does not mean none exists, and the
 last four rounds each found some. The unsafe-action figures describe the
 committed set; the hidden acceptance set is not ours to run; no remote is
 configured, so there is still no external CI evidence.
+
+---
+
+## 22. Where authority comes from
+
+**Current fact.** *An architecture decision, taken by the project owner after
+four rounds in which every fix was a new rule for reading English.*
+
+The safety argument used to be **"we read every claim correctly"**. That
+argument cannot be finished. The generator is a person writing English; the
+reader is shallow parsing over regular expressions, and the last four rounds
+each produced new sentence shapes that got past it - reduced relative clauses,
+zero-marker relative clauses, fronted adverbials, quotation forms. Each finding
+was real. The supply of them is not exhausted, and cannot be.
+
+So the argument changed. **Free text finds candidates. It does not authorise
+changing what someone runs.**
+
+| stage | what free text may do | what it may not do |
+|---|---|---|
+| `retrieved_candidate` | find candidates by paths, symbols, errors, behaviour | - |
+| `accepted_same_incident` | identify, and **refuse** - a contradiction in prose is still a reason to stop | - |
+| `actionable_incident` | - | authorise a change |
+
+Stage three now needs an **authorisation source**. Today there is one:
+`--package NAME` (`packages` over MCP), naming a package the incident also
+names, directly or through the repository's own manifests. The response carries
+an `authorization` block saying whether anything authorised the answer, and when
+nothing did, what *would* have been recommended:
+
+    "authorization": {
+      "authorized": false,
+      "proposed_action": "upgrade",
+      "proposed_target": "dsh-v0.1.2-alpha.2",
+      "missing": ["the package you are running, as `--package NAME` ..."]
+    }
+
+Note what is deliberately asymmetric: **prose may veto, never authorise.** A
+misreading that refuses costs recall, which is measurable and bounded. A
+misreading that authorises costs a wrong instruction. That asymmetry is what
+turns the unbounded parsing problem from a safety problem into a recall problem.
+
+**What this costs.** Seven eval cases changed from `upgrade` to
+`collect_more_info` when the gate landed - every one of them a positive, and no
+negative changed in either direction. They were restored by stating the package
+in the case, the same way `core_version`, `runtime` and `os` were already
+stated: a user of this tool knows what they are running, and the whole premise
+is "given my version and environment". Two new cases hold the unauthorised path
+open on purpose, so the property is measured and not merely implemented:
+`auth-prose-only-is-a-proposal` and `auth-unrelated-package-is-a-proposal`.
+
+Fourteen unit tests changed the same way. They now state the package, which
+makes the negatives *harder*: every fail-closed phrasing is now checked with the
+user having named the very package the incident is about, and must still refuse.
+
+**Verification evidence.** With `--package`, the flagship symptom answers
+`upgrade → dsh-v0.1.2-alpha.2` as before. Without it, the same symptom returns
+the same matched incident and the same evidence, `stopped_at:
+accepted_same_incident`, action `collect_more_info`, and the proposal recorded.
+Naming an unrelated package is not authorisation either. CLI and a freshly
+launched stdio MCP process agree on all three. 470 tests pass; evals **70/71**
+with the one long-standing gap; ruff, format and mypy clean.
+
+**Remaining target.** The second authorisation source - the user confirming the
+reading echoed back to them - is not built. Until it is, a report that states no
+package can only ever be a proposal, which is a real recall cost for anyone who
+pastes an error and expects an answer. That echo is the next step.
+
+**Blockers.** None known, with the same meaning as in section 21: no input
+demonstrated to produce an unsafe action is currently unfixed. The hidden
+acceptance set is not ours to run; no remote is configured.
 
 ---
 

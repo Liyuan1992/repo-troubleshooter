@@ -75,6 +75,24 @@ class PluginSpec(BaseModel):
     version: str | None = None
 
 
+class Authorization(BaseModel):
+    """Whether anything authorised recommending a change, and what.
+
+    Retrieval and identity may run on free text. Recommending that someone
+    change what they run may not: that authority comes from what the user
+    stated in structured fields, or from confirming the reading back to them.
+    Without one of those the answer stops at a proposal.
+    """
+
+    authorized: bool = False
+    #: "structured_package" today; "confirmed" once the echo channel exists.
+    source: str | None = None
+    #: What would have been recommended, kept so the proposal is still visible.
+    proposed_action: str | None = None
+    proposed_target: str | None = None
+    missing: list[str] = Field(default_factory=list)
+
+
 class DiagnosisRequest(BaseModel):
     """What the user's machine may send. Nothing here is free-form telemetry."""
 
@@ -84,6 +102,12 @@ class DiagnosisRequest(BaseModel):
     core_version: str | None = None
     runtime: str | None = None  # e.g. "node 24.11.1"
     os: str | None = None  # e.g. "windows"
+    # The packages the user says they are running, stated as fields rather than
+    # left to be read out of prose. Prose can be misread - a retraction missed,
+    # a quoted ticket taken as the reporter's own - and a misreading that can
+    # authorise an action is a wrong action. A misreading that can only *find*
+    # a candidate is a wrong suggestion, which the user sees and rejects.
+    packages: list[str] = Field(default_factory=list)
     plugins: list[PluginSpec] = Field(default_factory=list)
     # Key NAMES only. Values are never requested.
     config_keys: list[str] = Field(default_factory=list)
@@ -208,6 +232,7 @@ class DiagnosisResponse(BaseModel):
     coverage_notes: list[str] = Field(default_factory=list)
     fingerprint: dict[str, Any] = Field(default_factory=dict)
     provider: str = "deterministic"
+    authorization: Authorization = Field(default_factory=Authorization)
 
     # Actions that change what the user runs. Only stage 3 may produce these.
     VERSION_ACTIONS: ClassVar[frozenset[str]] = frozenset(
