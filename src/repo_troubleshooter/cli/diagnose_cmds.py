@@ -101,12 +101,32 @@ def render(response: DiagnosisResponse, console: Console, trace: Any = None) -> 
 
 
 def _render_understanding(console: Any, understood: Any) -> None:
-    """Print the reading the answer is waiting on.
+    """Print what the answer is waiting on, in full.
 
-    Deliberately plain and complete: the point is that a wrong reading is easy
-    to spot here, before it becomes a recommendation.
+    The first version of this showed the parse and nothing else - not which
+    incident had been matched, not why it was accepted, not what evidence stood
+    behind the proposal. Agreeing to that is not an informed answer, and the
+    whole safety argument rests on the agreement being informed. The digest has
+    always covered the incident; a digest is not something a person can check.
     """
-    console.print("\n[bold]Before advising, check what I read:[/bold]")
+    console.print("\n[bold]Before advising, check what I matched and what I read.[/bold]")
+
+    if understood.incident_title:
+        console.print("\n  [bold]incident[/bold]")
+        console.print(f"    {understood.incident_title}")
+        if understood.incident_url:
+            console.print(f"    {understood.incident_url}")
+        if understood.identity_rule:
+            console.print(f"    accepted by: {understood.identity_rule}")
+        for name, values in (understood.shared_evidence or {}).items():
+            console.print(f"    shared {name}: {', '.join(str(v) for v in values[:4])}")
+
+    if understood.evidence:
+        console.print("\n  [bold]evidence behind the proposal[/bold]")
+        for ref in understood.evidence[:8]:
+            console.print(f"    {ref}")
+
+    console.print("\n  [bold]what I read in your report[/bold]")
     rows = (
         ("you stated these packages", understood.packages_stated),
         ("read as failing", understood.failing),
@@ -117,19 +137,24 @@ def _render_understanding(console: Any, understood: Any) -> None:
         ("quoted, not asserted", understood.quoted_packages),
         ("said in words I could not read", understood.unread_claims),
     )
+    printed = False
     for label, values in rows:
         if values:
-            console.print(f"  {label}: {', '.join(str(v) for v in values)}")
+            printed = True
+            console.print(f"    {label}: {', '.join(str(v) for v in values)}")
+    if not printed:
+        console.print("    nothing about packages could be read out of it")
     for label, value in (
         ("version", understood.core_version),
         ("runtime", understood.runtime),
         ("os", understood.os),
     ):
         if value:
-            console.print(f"  {label}: {value}")
+            console.print(f"    {label}: {value}")
+
     if understood.proposed_action:
         target = f" -> {understood.proposed_target}" if understood.proposed_target else ""
-        console.print(f"  [bold]would recommend[/bold]: {understood.proposed_action}{target}")
+        console.print(f"\n  [bold]would recommend[/bold]: {understood.proposed_action}{target}")
     console.print(f"  (digest {understood.digest})")
 
 

@@ -101,6 +101,18 @@ class Understanding(BaseModel):
     core_version: str | None = None
     runtime: str | None = None
     os: str | None = None
+    #: The incident this reading points at. The digest has always covered it,
+    #: but a digest is not something a person can check - agreeing to a reading
+    #: that does not say which incident it matched is not an informed answer.
+    incident_title: str | None = None
+    incident_url: str | None = None
+    #: Why it was accepted: the identity rule, and the features both sides
+    #: share. This is the reasoning the agreement is really about.
+    identity_rule: str | None = None
+    shared_evidence: dict[str, list[str]] = Field(default_factory=dict)
+    #: The upstream artifacts behind the proposal - the thread, the commit that
+    #: changed it, the release that first carried the change.
+    evidence: list[str] = Field(default_factory=list)
     #: What this answer would recommend if the reading is right.
     proposed_action: str | None = None
     proposed_target: str | None = None

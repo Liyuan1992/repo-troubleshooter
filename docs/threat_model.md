@@ -49,15 +49,22 @@ each asked about with itself removed from the evidence.
 
 | gate | current | threshold |
 |---|---|---|
-| `false_proposal_rate` - real reports that would propose acting on another incident | 0.00 (0/60) | **≤ 0.05** |
-| `false_identity_rate` - real reports matched to another incident | 0.25 (15/60), ≈0.13-0.18 after reading the pairs | tracked, no threshold yet |
+| `false_proposal_rate` - sampled reports that would propose acting on another incident | 0.00 (0/60) | **≤ 0.05** |
+| `proposal_opportunity_count` - matches where a released fix existed to point at | 3 | the denominator; the rate above means nothing at 0 |
+| positive control - a known released incident, asked the same way | reaches a proposal | must, or the run fails |
+| `other_report_match_rate` - sampled reports matched to another report | 0.267 (16/60) | tracked, no threshold |
+| `adjudicated_false_identity_rate` - the same, after reading each pair | 0.133 (8/60), upper bound 0.200 | tracked, no threshold |
 | developer suite `evals/runner.py` | 70/71 | no regression |
 | unsafe action on the committed adversarial set | 0 | no regression |
 
-`false_identity_rate` has no threshold because this is its first measurement and
-one sample of one repository is not a basis for setting one. The judgement
-behind it is in `evals/holdout_judgement.md`; the reading of every pair is
-recorded there, so the number can be argued with.
+The match rate is machine-counted and includes genuine duplicates, where
+matching is correct - which is why it is not called a false-identity rate. Only
+a person can separate those, and the reading of every pair is recorded in
+`evals/holdout_judgement.md` so the adjudicated number can be argued with.
+
+Neither has a threshold: one sample of one repository is not a basis for setting
+one, and a number chosen to be satisfied by today's measurement would be
+decoration.
 
 ## Adversarial findings after this point
 

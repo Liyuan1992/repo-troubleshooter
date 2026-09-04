@@ -205,6 +205,8 @@ def _understanding(
     features: feat.SymptomFeatures,
     incident: IncidentSummary,
     action: RecommendedAction,
+    identity: Any | None = None,
+    evidence: list[str] | None = None,
 ) -> Understanding:
     """Everything the gate acted on, in a form a person can check."""
     understood = Understanding(
@@ -225,6 +227,15 @@ def _understanding(
         core_version=request.core_version,
         runtime=request.runtime,
         os=request.os,
+        incident_title=incident.title,
+        incident_url=incident.url,
+        identity_rule=getattr(identity, "rule", None),
+        shared_evidence={
+            name: values
+            for name, values in (getattr(identity, "shared", None) or {}).items()
+            if values
+        },
+        evidence=list(evidence or []),
         proposed_action=action.type,
         proposed_target=action.target,
     )
@@ -286,22 +297,36 @@ def _authorize(
 
     stated = {name.strip().lower() for name in request.packages if name.strip()}
     candidate_features = load_features(session, candidate.object_id)
-    named = (
-        candidate_features.subject_packages
-        | candidate_features.subject_dependencies
+    family = PackageFamily.load(session, repo.id)
+
+    # Only the incident's *failing* subject authorises. Accepting any mention -
+    # a dependency it lists, a package it explicitly clears, one whose role it
+    # never settles - read "I run this package" as "I confirm it is what broke",
+    # which are different statements. It also meant a package the report had
+    # declared healthy could authorise acting on that same report.
+    failing = candidate_features.subject_packages
+    if stated & failing or family.any_related(stated, failing):
+        return Authorization(authorized=True, source="structured_package")
+
+    mentioned = (
+        candidate_features.subject_dependencies
         | candidate_features.subject_confirmed_non_primary
         | candidate_features.subject_conflicted
         | candidate_features.subject_unresolved
     )
-    family = PackageFamily.load(session, repo.id)
-    if stated & named or family.any_related(stated, named):
-        return Authorization(authorized=True, source="structured_package")
+    if stated & mentioned or family.any_related(stated, mentioned):
+        reason = (
+            f"this incident mentions {sorted(stated & mentioned)[:3] or sorted(stated)[:3]}, but "
+            "not as what failed - running a package an incident happens to name does not make "
+            "that incident yours"
+        )
+    else:
+        reason = f"you named {sorted(stated)[:3]}, which this incident does not mention"
     return Authorization(
         authorized=False,
         requires_confirmation=True,
         missing=[
-            f"you named {sorted(stated)[:3]}, which this incident does not mention; "
-            f"if the reading below is right anyway, confirm it: `--confirm {understood.digest}`"
+            f"{reason}; if the reading below is right anyway: `--confirm {understood.digest}`"
         ],
     )
 
@@ -700,7 +725,14 @@ def diagnose(
     # One that can authorise an action produces a wrong action. So the two are
     # separated: the packages the user stated as fields decide whether this
     # answer may propose a change.
-    understood = _understanding(request, query_features, incident, action)
+    understood = _understanding(
+        request,
+        query_features,
+        incident,
+        action,
+        identity=identity,
+        evidence=[f"{item.source_type}:{item.locator}" for item in packet.items.values()],
+    )
     authorization = _authorize(session, request, top, repo, understood)
     if action.type in DiagnosisResponse.VERSION_ACTIONS and not authorization.authorized:
         authorization.proposed_action = action.type

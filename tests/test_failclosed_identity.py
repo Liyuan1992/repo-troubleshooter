@@ -807,6 +807,46 @@ class TestElevenPhrasingsThroughBothSurfaces:
         assert mcp["authorization"]["authorized"] is False
         assert mcp["recommended_action"]["type"] == cli["recommended_action"]["type"]
 
+    @pytest.mark.parametrize(
+        ("case_id", "package"),
+        [
+            # Named by the incident, but never as what failed. Running a package
+            # an incident happens to mention does not make that incident yours,
+            # and accepting any mention meant a package the report had declared
+            # *healthy* could authorise acting on that same report.
+            ("role-never-settled", "@cordisjs/plugin-loader"),
+            ("not-mentioned-at-all", "@nebula/theme-engine"),
+        ],
+    )
+    def test_only_the_failing_subject_authorises(self, case_id, package):
+        payload = cli_diagnose(self.REAL_SYMPTOM, packages=(package,))
+        assert payload["incident"]["matched"] is True, case_id
+        assert payload["authorization"]["authorized"] is False, case_id
+        assert payload["recommended_action"]["type"] not in UNSAFE, case_id
+        assert payload["authorization"]["requires_confirmation"] is True, case_id
+
+    def test_the_failing_subject_still_authorises(self):
+        """The narrowing must not cost the case it was built for."""
+        payload = cli_diagnose(self.REAL_SYMPTOM, packages=("@deepseek-ai/dsh-client-modules",))
+        assert payload["authorization"]["source"] == "structured_package"
+        assert payload["recommended_action"]["target"] == "dsh-v0.1.2-alpha.2"
+
+    def test_the_echo_says_what_is_being_agreed_to(self):
+        """A confirmation is only informed if it shows what it confirms.
+
+        The first version showed the parse and nothing else - not the incident,
+        not why it was accepted, not the evidence behind the proposal. The
+        digest covered the incident all along, but a digest is not something a
+        person can check.
+        """
+        understood = cli_diagnose(self.REAL_SYMPTOM, packages=())["understood"]
+        assert understood["incident_title"]
+        assert understood["incident_url"]
+        assert understood["identity_rule"]
+        assert understood["shared_evidence"], "the agreement is about why it matched"
+        kinds = {ref.split(":", 1)[0] for ref in understood["evidence"]}
+        assert {"discussion", "commit", "release"} <= kinds, kinds
+
     def test_the_reading_is_echoed_before_anything_is_recommended(self):
         """The answer to a misreading is to show it, not to parse harder.
 

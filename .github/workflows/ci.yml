@@ -86,9 +86,13 @@ jobs:
 
       - name: The installed wheel builds a schema from an empty database
         env:
-          RT_DATABASE_URL: postgresql+psycopg://rt:rt@127.0.0.1:5432/rt_wheelcheck
+          # Same service the rest of the job uses. This step was written against
+          # a default postgres that does not exist here, so it would have failed
+          # before the live holdout was ever reached.
+          RT_DATABASE_URL: postgresql+psycopg://rt_claude:rt_claude@127.0.0.1:55447/rt_wheelcheck
+          PGPASSWORD: rt_claude
         run: |
-          psql "postgresql://rt:rt@127.0.0.1:5432/postgres" -c 'CREATE DATABASE rt_wheelcheck'
+          psql -h 127.0.0.1 -p 55447 -U rt_claude -d rt_claude             -c 'CREATE DATABASE rt_wheelcheck'
           /tmp/wheelcheck/bin/repo-troubleshooter db init
           /tmp/wheelcheck/bin/repo-troubleshooter db ping
           /tmp/wheelcheck/bin/repo-troubleshooter status

@@ -355,9 +355,9 @@ database that is down, empty, foreign or stale fails within ~3 seconds with a
 command to run, never a traceback; MCP returns a structured error instead of
 hanging.
 
-**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **475
+**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **479
 passed**, measured. The suite has grown each round - 118, 146, 157, 178, 188,
-216, 263, 291, 320, 354, 355, 374, 402, 438, 462, 467, 470, now 475 - so a
+216, 263, 291, 320, 354, 355, 374, 402, 438, 462, 467, 470, 475, now 479 - so a
 number quoted from an earlier round no longer matches, and several places in
 this document had gone on quoting one.
 `tests/test_mcp_roundtrip.py`
@@ -404,7 +404,7 @@ design. The second repository has not been started.
 ## 7. Delivery
 
 **Current fact.** Local gates all pass: `uv sync --extra dev --frozen`,
-`ruff check .`, `ruff format --check .`, `mypy src`, `pytest` (475 tests),
+`ruff check .`, `ruff format --check .`, `mypy src`, `pytest` (479 tests),
 `evals/runner.py`, `docker compose up -d`, `db init`, `db ping`, `status`,
 `uv build`, and a clean-venv install of the built wheel running `db init`, a
 real `diagnose` against the synced database, and the same `diagnose` over stdio
@@ -1223,8 +1223,12 @@ changing what someone runs.**
 | `actionable_incident` | - | authorise a change |
 
 Stage three now needs an **authorisation source**. Today there is one:
-`--package NAME` (`packages` over MCP), naming a package the incident also
-names, directly or through the repository's own manifests. The response carries
+`--package NAME` (`packages` over MCP), naming a package the incident names as
+**what failed**, directly or through the repository's own manifests.
+
+*(Corrected in section 25. As first written this accepted a package the incident
+named in any role at all - including one it had explicitly declared healthy -
+which read "I run this package" as "I confirm it is what broke".)* The response carries
 an `authorization` block saying whether anything authorised the answer, and when
 nothing did, what *would* have been recommended:
 
@@ -1351,17 +1355,18 @@ itself and nothing is learned; removed, the honest answer for most reports is
 "no incident here I know of", and anything else is a duplicate or a false
 identity.
 
+*(Superseded by section 25: the query was built from the report's body while
+the corpus was mined from its title and body, so these numbers are measured with
+a handicapped query, and `false_identity_rate` was a misnomer.)*
+
 | gate | measured | threshold |
 |---|---|---|
 | `false_proposal_rate` | **0.00** (0/60) | ≤ 0.05, enforced - the run exits non-zero above it |
 | `false_identity_rate` | **0.25** (15/60) | tracked, no threshold yet |
 
 **Read, not assumed.** The 15 matches are listed and judged one by one in
-`evals/holdout_judgement.md`: **4 are the same incident, 3 are borderline, 8 are
-wrong**. So the estimate behind the 0.25 upper bound is roughly 0.13-0.18. No
-threshold is set on it, because one sample of one repository is not a basis for
-setting one, and a number chosen to be satisfied by today's measurement would be
-decoration.
+`evals/holdout_judgement.md`. No threshold is set on the match rate, because one
+sample of one repository is not a basis for setting one.
 
 **And the 0.00 is not reassuring by itself.** None of the 15 reached a version
 action because the incidents they matched carry no released fix to point at - the
@@ -1369,12 +1374,13 @@ version gate stopped them, not the identity gate. Had those incidents had
 releases, some of the eight wrong matches would have become proposals. That is
 written into the judgement file rather than left for a reader to notice.
 
-**What the measurement found.** Five of the eight wrong matches are not incident
+**What the measurement found.** Four of the eight wrong matches are not incident
 reports at all - `有没有可自定义重试时间的插件`, `怎么在不动旧版本的情况下更新版本？`,
-`[Ideas] edit 工具是否应该…` - they describe a wish, not a failure. Nothing in the
-pipeline yet asks whether a report describes a failure at all. That is the
-clearest improvement lead in this document, and it is recorded in
-`docs/known_bypasses.md` rather than acted on here.
+`[Ideas] edit 工具是否应该…`, `方舟的 CodingPlan 套餐期望能够接入` - they describe a
+wish, not a failure. Nothing in the pipeline yet asks whether a report describes
+a failure at all. That is the clearest improvement lead in this document, and it
+is recorded in `docs/known_bypasses.md` rather than acted on here. *(This
+paragraph said five until section 25; it was a miscount of my own table.)*
 
 **Adversarial findings after this point** stay in the suite as regressions. What
 changes is their standing: a new phrasing that gets past the reader is a defect
@@ -1390,6 +1396,102 @@ The judgement of all 15 pairs is committed. Developer suite unchanged at 70/71.
 would say whether 0.13-0.18 is a property of the engine or of this corpus.
 
 **Blockers.** None known, with the meaning given in section 21.
+
+---
+
+## 25. Closing the authorisation and measurement contracts
+
+**Current fact.** Five defects, all in what the previous three sections claimed
+rather than in the parsing they replaced. Two are the contract, two are the
+measurement, one is CI.
+
+### Naming a package the incident merely mentions authorised it
+
+`_authorize` accepted a stated package that appeared in *any* of the candidate's
+roles - failing subject, listed dependency, explicitly cleared, contradictory, or
+role never settled. So `--package @cordisjs/plugin-loader`, which #5084 only ever
+mentions with an unresolved role, produced `authorized=true` and an upgrade. A
+package the report had declared **healthy** would have done the same.
+
+That read *I run this package* as *I confirm it is what broke*. Only the
+incident's failing subject authorises now; every other role gets the
+confirmation route and a message saying which role it found.
+
+The alternative was two fields, `installed_packages` and `failing_packages`. One
+field with narrowed meaning was chosen instead: a user who is unsure which
+package broke is exactly the user this tool is for, and asking them to classify
+first puts the question back on them.
+
+### The confirmation did not show what was being confirmed
+
+The echo printed the parse - roles read, unread claims, environment, proposed
+action - and nothing about **which incident**, why it was accepted, or what
+evidence stood behind the proposal. Those appeared only after the user answered.
+The digest had covered the incident all along, but a digest is not something a
+person can check, so the agreement was not informed and the safety argument that
+rests on it did not hold.
+
+`Understanding` now carries `incident_title`, `incident_url`, `identity_rule`,
+`shared_evidence` and `evidence`, and the terminal prints all of it above the
+question.
+
+### The holdout query was poorer than the corpus it was compared against
+
+Signatures are mined from **title and body** (`features_for_object`); the
+holdout asked with the **body** alone. A methodological asymmetry of my own
+making, and it hid a pair: corrected, the count goes 15 → 16, with **#2463**
+appearing. The eligibility filter still measures the body alone on purpose -
+that decides which reports are sampled, and changing it too would have made the
+two runs incomparable.
+
+### `false_identity_rate` was the wrong name for what was counted
+
+Four of the sixteen matches are genuine duplicates, where matching is correct.
+Calling the raw count a false-identity rate counted them as errors. The machine
+number is `other_report_match_rate`; the adjudication lives in
+`evals/holdout_judgement.md` and cannot be computed - whether two reports are
+the same incident is a reading:
+
+| | |
+|---|---|
+| `other_report_match_rate` | 16/60 = **0.267** (machine) |
+| `confirmed_duplicate_rate` | 4/60 = 0.067 |
+| `borderline_rate` | 4/60 = 0.067 |
+| `adjudicated_false_identity_rate` | 8/60 = **0.133** |
+| upper bound, every borderline counted wrong | 12/60 = **0.200** |
+
+And a proposal rate needs a denominator. `proposal_opportunity_count` counts the
+matches where a released fix existed to point at: **3**, of which **0** produced
+a proposal. Below that, a positive control asks the same way about a report
+known to be a released incident and **must** reach a proposal - if it does not,
+the run fails, because a zero would then be describing the harness.
+
+*(Section 24 also said five of eight wrong matches were not failure reports. Four
+were. Corrected there and in the judgement file.)*
+
+### CI could not have reached any of this
+
+The wheel step created and used `rt:rt@127.0.0.1:5432`, a database that does not
+exist in that job; the service is `rt_claude:rt_claude@127.0.0.1:55447`. It
+would have failed before the live holdout ran. My error, introduced with the
+step itself.
+
+**Verification evidence.** `--package @cordisjs/plugin-loader` and
+`--package @nebula/theme-engine` no longer authorise and say why;
+`--package @deepseek-ai/dsh-client-modules` still does. The echoed reading
+carries the incident, the identity rule, the shared features and
+discussion/commit/release evidence, asserted by
+`test_the_echo_says_what_is_being_agreed_to`. Holdout at seed 20260904:
+`other_report_match_rate 0.2667`, `proposal_opportunity_count 3`,
+`false_proposal_rate 0.0`, positive control reaches a proposal, exit 0. 479
+tests pass; evals 70/71; ruff, format, mypy clean.
+
+**Remaining target.** Unchanged: one repository, one sample, one seed; and
+nothing yet asks whether a report describes a failure at all - which is where
+half the adjudicated errors come from.
+
+**Blockers.** None known, with the meaning given in section 21. Still no remote,
+so the corrected CI has not run anywhere.
 
 ---
 
