@@ -2,106 +2,94 @@
 
 English | [简体中文](README.zh-CN.md)
 
-An evidence-constrained troubleshooting agent that understands how open-source software
-evolves across versions.
+Turn an error report, version, and runtime environment into a troubleshooting proposal
+backed by real repository evidence.
 
-> "I am on this version, in this runtime, and I hit this error. What should I actually do?"
+Repository Troubleshooter searches discussions, releases, commit history, and documentation
+to answer:
 
-It answers one narrow question well: **given your version and your environment, is this a
-known incident, and what is the correct next action** — including the answer
-`insufficient_evidence`, which is a first-class product state, not a failure.
+- Is this a known incident?
+- Has a fix been released?
+- Does the user's current version already contain that change?
+- What should the user try next, and what evidence supports it?
 
-## The claim this project has to earn
-
-Generic semantic search finds a very similar problem and tells you to upgrade.
-It does not know you are already past that release.
+## Example
 
 ```text
-Generic hybrid RAG:          Upgrade to 0.1.2-alpha.1
-Repository Troubleshooter:   Your version already contains that change
-                             (first release containing it: 0.1.2-alpha.1),
-                             so this is probably a different incident.
-                             Next: collect <X>.
+Input
+  report:   client boot graph is empty after startup
+  version:  0.1.2-alpha.1
+  runtime:  Node.js 24.11.1 on Windows
+  package:  @deepseek-ai/dsh-client-modules
+
+Output
+  incident: known loader incident
+  action:   upgrade
+  target:   dsh-v0.1.2-alpha.2
+  evidence: discussion, fixing commit, and containing release
 ```
 
-If that case cannot be produced against real repositories with real evidence, the project
-is not worth continuing. Everything below exists to make that case reproducible.
-
-## Status
-
-Phase **V0 — Data Spine**. See [docs/status.md](docs/status.md) for what is built, what is
-verified, and what is deliberately not built yet.
-
-## Why the data model looks paranoid
-
-The whole product lives or dies on distinctions that most tools collapse:
-
-| Not the same thing | | |
-|---|---|---|
-| relevant | ≠ | same problem |
-| PR merged | ≠ | fix released |
-| commit contained in a release | ≠ | runtime problem proven fixed |
-| discussion closed / answered | ≠ | problem solved |
-| first reported in version X | ≠ | introduced in version X |
-
-So `git tag --contains` is stored as `ReleaseContainment` with the exact command
-transcript, and it is labelled everywhere it is used:
-
-> Commit containment proves the change is present in the tagged tree.
-> It does not by itself prove the runtime symptom is resolved.
-
-Raw facts and derived facts are also kept apart. Anything GitHub or git states directly is
-an object row; anything we concluded is a `RelationAssertion` carrying `derivation`
-(`github_native` / `git_deterministic` / `text_explicit` / `inferred`) and its evidence.
-An inference never silently becomes a fact.
-
-## Repositories do not share a shape
-
-The first live target, `deepseek-ai/deepseek-harness`, has **Issues disabled and no public
-PRs**. The textbook `Issue → PR → Commit` chain does not exist there, so nothing in the
-core assumes it. Surfaces are probed at sync time and recorded on the repository row:
-
-```bash
-rt probe deepseek-ai/deepseek-harness
-```
-
-Repository-specific knowledge lives in `repo_profiles/*.yaml`, not in core code. Onboarding
-a second repository should mean writing a profile. If it forces changes to retrieval,
-evidence or version logic, the design is not yet general — and the README will not claim
-"works with any GitHub repository" until that is demonstrated.
+When the evidence is not strong enough, the result is `insufficient_evidence` instead of an
+unsupported recommendation.
 
 ## Quick start
 
+Requirements: Python 3.12, [uv](https://docs.astral.sh/uv/), and Docker Compose.
+
 ```bash
 docker compose up -d
-uv venv --python 3.12 .venv && uv pip install -e ".[dev]"
-cp .env.example .env   # RT_GITHUB_TOKEN is optional if `gh auth login` is done
-rt db init
+uv sync --extra dev
+cp .env.example .env
+uv run rt db init
 ```
+
+On PowerShell, use `Copy-Item .env.example .env` instead of `cp`. A GitHub token is optional
+when the GitHub CLI is already authenticated with `gh auth login`.
+
+## Sync a repository
 
 ```bash
-rt sync deepseek-harness --max-discussions 200
+uv run rt profiles
+uv run rt probe deepseek-ai/deepseek-harness
+uv run rt sync deepseek-harness --max-discussions 200
+uv run rt status deepseek-ai/deepseek-harness
 ```
+
+Sync is safe to re-run and resume. The `status` command reports source freshness and
+completeness.
+
+## Diagnose a report
+
+Save the report as `report.txt`, then run:
 
 ```bash
-rt status deepseek-ai/deepseek-harness
+uv run rt diagnose --repo deepseek-ai/deepseek-harness --error-file report.txt --version 0.1.2-alpha.1 --runtime "node 24.11.1" --os windows --package @deepseek-ai/dsh-client-modules
 ```
+
+`--package` identifies the component the user believes is failing. It may be repeated. If the
+failing package is unknown, omit it and review the proposal and evidence before confirming.
+
+Use `--json` for machine-readable output and `--debug` to inspect the candidate and decision
+trace. Run `uv run rt diagnose --help` for the complete interface.
+
+## MCP
+
+The package includes a read-only stdio MCP server with `diagnose` and `get_evidence` tools.
 
 ```bash
-rt contains deepseek-ai/deepseek-harness <commit-sha> --version 0.1.1-rc.2
+uv run repo-troubleshooter-mcp --check
+uv run repo-troubleshooter-mcp
 ```
 
-## Layout
+## Current status
 
-```text
-src/repo_troubleshooter/
-  connectors/github   GitHub GraphQL/REST: surface probe, discussions, releases
-  connectors/git      clone/fetch mirror, tags, ancestry, docs snapshots
-  store               PostgreSQL schema (FTS + pg_trgm + pgvector, one database)
-  sync                idempotent, resumable, per-source health
-  normalize           body -> content units (prose / code / log / config)
-  relations           explicit cross-references only
-  versions            version normalisation and release containment
-  retrieval/evidence/diagnosis/verifier   later phases
-  cli, mcp            the only two interfaces in V1
-```
+The first repository validated with real data is
+[`deepseek-ai/deepseek-harness`](https://github.com/deepseek-ai/deepseek-harness). The CLI and
+MCP interfaces are available now. The tool produces recommendations and evidence but does not
+modify the user's project. Validation on a second repository is still in progress.
+
+## Documentation
+
+- [Current status](docs/status.md)
+- [Threat model](docs/threat_model.md)
+- [Known limitations](docs/known_bypasses.md)
