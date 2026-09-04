@@ -109,6 +109,9 @@ jobs:
           uv run repo-troubleshooter signatures deepseek-ai/deepseek-harness --rebuild
           uv run pytest -q -m live
           uv run python evals/runner.py
-          # The acceptance criterion: real reports, each asked about with itself
-          # removed. Fails the job above the threshold in docs/threat_model.md.
-          uv run python evals/holdout.py --sample 60
+          # Real reports, each asked about with itself removed. This job syncs
+          # 200 discussions while the development corpus holds 550, so these
+          # numbers are a regression signal for this job alone - they are not
+          # comparable with the ones in docs/threat_model.md and must not be
+          # quoted as them.
+          uv run python evals/holdout.py --sample 60 --out holdout_ci.json

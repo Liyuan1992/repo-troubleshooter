@@ -1462,7 +1462,9 @@ the same incident is a reading:
 
 And a proposal rate needs a denominator. `proposal_opportunity_count` counts the
 matches where a released fix existed to point at: **3**, of which **0** produced
-a proposal. Below that, a positive control asks the same way about a report
+a proposal. *(Section 26 corrects the description: it is the denominator of the
+conditional rate only, never of the overall one, and this 0/60 is a regression
+fixture rather than an estimate - wider samples of the same corpus do propose.)* Below that, a positive control asks the same way about a report
 known to be a released incident and **must** reach a proposal - if it does not,
 the run fails, because a zero would then be describing the harness.
 
@@ -1492,6 +1494,91 @@ half the adjudicated errors come from.
 
 **Blockers.** None known, with the meaning given in section 21. Still no remote,
 so the corrected CI has not run anywhere.
+
+---
+
+## 26. Two denominators, and what the machine may call things
+
+**Current fact.** *No identity-parsing changes in this round. Only the
+measurement vocabulary, and what may be inferred from it.*
+
+### The machine may not call anything false
+
+`false_proposal_rate` counted proposals pointing at **another report**, and some
+of those are genuine duplicates where proposing is correct. The machine cannot
+tell which; separating them is a reading. The machine number is
+`other_report_proposal_rate`, and only the hand adjudication in
+`evals/holdout_judgement.md` produces `adjudicated_false_proposal_rate`.
+
+### A rate needs the denominator it was measured against
+
+Two are now reported, because they answer different questions:
+
+* **overall** - proposals over every report sampled. The product rate: what a
+  user of this corpus meets.
+* **given opportunity** - the same proposals over the matches where a version
+  action was reachable at all. The quality rate: of the times the question was
+  really put, how often the answer pointed elsewhere.
+
+`proposal_opportunity_count` is the denominator of the second only. Section 25
+described it as the denominator of the rate over the sample, which it is not.
+
+### The fixture's zero did not survive a wider sample
+
+| run | reports | opportunities | proposals | overall | given opportunity |
+|---|---|---|---|---|---|
+| fixture, seed 20260904 | 60 | 3 | 0 | 0.000 | 0.000 |
+| wide, seed 20260904 | 300 | 17 | 2 | 0.0067 | 0.118 |
+| seeds 11 / 22 / 33 | 100 each | 4 / 10 / 7 | 1 / 3 / 2 | 0.01 / 0.03 / 0.02 | 0.25 / 0.30 / 0.286 |
+| pooled 11/22/33 | 300 draws, 246 distinct | 21 | 6 | 0.020 | 0.286 |
+
+The 60-report fixture stays, as a repeatable regression. It is no longer quoted
+as a system error rate: it had three opportunities, and the same code on wider
+samples proposes. Every run now records seed, sample size, eligible population,
+corpus size, `data_as_of` and the numbers of the reports sampled, because a run
+against CI's 200-discussion corpus is not comparable with one against this 550.
+
+### Adjudicated
+
+All five distinct proposals are read in the judgement file: **1 same, 1
+borderline, 3 wrong**. Pooled over the three seeds:
+
+| | overall | given opportunity |
+|---|---|---|
+| `adjudicated_false_proposal_rate` | 4/300 = **0.013** | 4/21 = **0.19** |
+| upper bound, borderline counted wrong | 5/300 = 0.017 | 5/21 = 0.238 |
+
+**Read the conditional one.** The overall rate is low mainly because a version
+action is rarely reachable. When one is, roughly **one proposal in five points
+at a different incident**. That is the first number this project has that says
+what the identity model is actually worth, and it is not a good one.
+
+It is also not an action rate. None of these could become a recommendation
+without the user naming the failing package or confirming the echoed reading -
+the hard gate, unchanged and still asserted at zero.
+
+### What stays frozen
+
+`#1648 不支持打断模式吗` is a question about how to steer a running agent,
+proposed against an unrelated bug. Reports that are not failure reports keep
+producing this class of error. That is the next phase's target, and it is not to
+be approached by adding verbs, package names or sentence-shape rules - those are
+frozen until a product metric exists to move.
+
+**Verification evidence.** Five runs, all exit 0 with the positive control
+reaching a proposal: fixture 60, wide 300, and seeds 11/22/33 at 100 each.
+479 tests pass; evals 70/71; ruff, format and mypy clean.
+
+**Remaining target.** One repository. The conditional rate rests on 21
+opportunities pooled, which is a small number to draw a conclusion from, and the
+spread across seeds (0.118 to 0.30) says so.
+
+**Blockers.** None known, in the sense given in section 21 - no input
+demonstrated to produce a wrong *action* is unfixed.
+
+**Delivery evidence still missing.** The repository has no remote, so no CI run
+has ever executed: the workflow is a file, not a result. Nothing in this
+document may be read as "CI passed".
 
 ---
 

@@ -47,24 +47,61 @@ safety problem to a quality problem.
 Measured on **`evals/holdout.py`**: real reports sampled from the synced corpus,
 each asked about with itself removed from the evidence.
 
-| gate | current | threshold |
+Every run records its provenance - seed, sample size, eligible population,
+corpus size, `data_as_of`, and the numbers of the reports sampled. Two runs are
+comparable only when those match: CI syncs 200 discussions and this corpus holds
+550, so CI's numbers are a regression signal for CI and cannot be read against
+the ones below.
+
+### The hard gate
+
+**No wrong action, ever, without authorisation.** An action that changes what
+someone runs requires either a stated package that the incident names as what
+failed, or an explicit confirmation bound to the digest of the reading being
+shown. This is asserted at zero in the committed suite and does not move.
+
+Everything below this line is *proposal* quality. A proposal is what the reader
+sees and can reject; it is not an action.
+
+### Measured quality
+
+Machine-counted, from `evals/holdout.py`. Note what the machine may and may not
+call things: it counts proposals pointing at **another report**, and some of
+those are genuine duplicates where proposing is correct. Only a person can
+separate them, so nothing machine-counted is called "false".
+
+| metric | fixture (60) | wide (300) | pooled seeds 11/22/33 | threshold |
+|---|---|---|---|---|
+| `other_report_proposal_rate_overall` | 0.000 (0/60) | 0.0067 (2/300) | 0.020 (6/300) | **≤ 0.05** |
+| `other_report_proposal_rate_given_opportunity` | 0.000 (0/3) | 0.118 (2/17) | 0.286 (6/21) | tracked, none |
+| `proposal_opportunity_count` | 3 | 17 | 21 | — |
+| `other_report_match_rate` | 0.267 | 0.183 | 0.203 | tracked, none |
+| positive control | reaches a proposal | reaches a proposal | reaches a proposal | must, or the run fails |
+
+Adjudicated in `evals/holdout_judgement.md` - the only place a number may be
+called false:
+
+| metric | wide (300) | pooled seeds |
 |---|---|---|
-| `false_proposal_rate` - sampled reports that would propose acting on another incident | 0.00 (0/60) | **≤ 0.05** |
-| `proposal_opportunity_count` - matches where a released fix existed to point at | 3 | the denominator; the rate above means nothing at 0 |
-| positive control - a known released incident, asked the same way | reaches a proposal | must, or the run fails |
-| `other_report_match_rate` - sampled reports matched to another report | 0.267 (16/60) | tracked, no threshold |
-| `adjudicated_false_identity_rate` - the same, after reading each pair | 0.133 (8/60), upper bound 0.200 | tracked, no threshold |
+| `adjudicated_false_proposal_rate` overall | 0.003 | 0.013 |
+| `adjudicated_false_proposal_rate` given opportunity | 0.059 | **0.19** (upper bound 0.238) |
+
+**Two denominators, on purpose.** The overall rate is the product rate: what a
+user of this corpus meets. The conditional rate is the quality rate: of the
+times a version action was reachable, how often it pointed elsewhere.
+`proposal_opportunity_count` is the denominator of the conditional rate only -
+never of the overall one.
+
+**The fixture is a regression, not an estimate.** Its 0/60 had three
+opportunities and is not evidence of a system error rate; wider samples from the
+same corpus and the same code do propose. Neither rate has a threshold on the
+conditional side: the counts are small, one corpus is one corpus, and a number
+chosen to be satisfied by today's measurement would be decoration.
+
+| other gates | current | threshold |
+|---|---|---|
 | developer suite `evals/runner.py` | 70/71 | no regression |
 | unsafe action on the committed adversarial set | 0 | no regression |
-
-The match rate is machine-counted and includes genuine duplicates, where
-matching is correct - which is why it is not called a false-identity rate. Only
-a person can separate those, and the reading of every pair is recorded in
-`evals/holdout_judgement.md` so the adjudicated number can be argued with.
-
-Neither has a threshold: one sample of one repository is not a basis for setting
-one, and a number chosen to be satisfied by today's measurement would be
-decoration.
 
 ## Adversarial findings after this point
 

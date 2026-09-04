@@ -47,7 +47,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from repo_troubleshooter.diagnosis.contract import DiagnosisRequest, DiagnosisResponse
@@ -67,14 +67,12 @@ ASSUMED_VERSION = "0.1.2-alpha.1"
 #: there is nothing to identify it by.
 MIN_TEXT_CHARS = 200
 
-#: The acceptance threshold, from `docs/threat_model.md`. Exceeding it fails the
-#: run: the criterion is a gate, not a number in a report someone may read.
-#: Read it next to `proposal_opportunity_count` - passing with no opportunities
-#: means nothing could have proposed, not that nothing wrong was proposed.
-#: There is deliberately no threshold on the match rate: one sample of one
-#: repository is not a basis for setting one, and part of that number is real
-#: duplicates, which only a person can separate out.
-MAX_FALSE_PROPOSAL_RATE = 0.05
+#: Regression threshold on the machine-counted rate, from `docs/threat_model.md`.
+#: Note what it is not: this counts proposals pointing at *another report*, and
+#: some of those are genuine duplicates where proposing is correct. Only a
+#: person can separate them, so nothing here is called "false". Exceeding the
+#: threshold fails the run.
+MAX_OTHER_REPORT_PROPOSAL_RATE = 0.05
 
 
 @dataclass
@@ -119,6 +117,10 @@ class HoldoutResult:
     seed: int
     cases: list[HoldoutCase] = field(default_factory=list)
     control: dict[str, Any] = field(default_factory=dict)
+    #: What this run was measured against. Two runs are only comparable when
+    #: these match: a 200-discussion CI corpus and a 550-discussion local one
+    #: produce different numbers from the same code.
+    provenance: dict[str, Any] = field(default_factory=dict)
 
     @property
     def proposals(self) -> list[HoldoutCase]:
@@ -142,6 +144,7 @@ class HoldoutResult:
             "sample": self.sample,
             "seed": self.seed,
             "assumed_core_version": ASSUMED_VERSION,
+            "provenance": self.provenance,
             "method": (
                 "leave-one-out: the sampled report is removed from the evidence store inside a "
                 "transaction that is rolled back, then its own text is asked about"
@@ -163,21 +166,44 @@ class HoldoutResult:
                 "value": len(self.opportunities),
                 "definition": (
                     "matches where the incident carried a released fix, so a version action "
-                    "was reachable. The denominator of the rate below: at zero, the rate "
-                    "describes an absence of opportunity rather than an absence of error"
+                    "was reachable. This is the denominator of the *conditional* rate only - "
+                    "not of the overall rate, which is over the whole sample"
                 ),
             },
             "positive_control": self.control,
-            "false_proposal_count": len(proposals),
-            "false_proposal_rate": {
+            "other_report_proposal_count": len(proposals),
+            "other_report_proposal_rate_overall": {
                 "value": round(len(proposals) / self.sample, 4) if self.sample else 0.0,
-                "n": self.sample,
+                "numerator": len(proposals),
+                "denominator": self.sample,
                 "definition": (
-                    "share of sampled reports that would propose a version action pointing at "
-                    "another incident. Read it next to proposal_opportunity_count: zero out of "
-                    "zero opportunities is an observation, not evidence"
+                    "product rate: proposals pointing at another report, over every report "
+                    "sampled. What a user of this corpus would encounter. Machine-counted: "
+                    "some of these can be genuine duplicates, so it is not an error rate and "
+                    "is not called one"
                 ),
             },
+            "other_report_proposal_rate_given_opportunity": {
+                "value": (
+                    round(len(proposals) / len(self.opportunities), 4)
+                    if self.opportunities
+                    else None
+                ),
+                "numerator": len(proposals),
+                "denominator": len(self.opportunities),
+                "definition": (
+                    "conditional quality rate: the same proposals, over only the matches "
+                    "where a version action was reachable at all. Null when there were no "
+                    "opportunities - the question was never put"
+                ),
+            },
+            "not_an_error_rate": (
+                "Neither rate above is an error rate, and neither may be extrapolated to one. "
+                "A proposal pointing at a genuine duplicate is correct; separating those is a "
+                "reading, recorded in evals/holdout_judgement.md as "
+                "adjudicated_false_proposal_rate. A fixed seed and sample is a repeatable "
+                "regression fixture, not an estimate of how often the system is wrong."
+            ),
             "proposals": [c.to_json() for c in proposals],
             "cases": [c.to_json() for c in self.cases],
         }
@@ -212,6 +238,7 @@ def _positive_control(session: Session, repo: Repository) -> dict[str, Any]:
         else None
     )
     return {
+        "data_as_of": response.data_as_of.isoformat() if response.data_as_of else None,
         "matched": response.incident.matched,
         "proposed_action": proposed,
         "proposed_target": response.authorization.proposed_target
@@ -224,8 +251,8 @@ def _positive_control(session: Session, repo: Repository) -> dict[str, Any]:
     }
 
 
-def _sample_objects(session: Session, repo: Repository, size: int, seed: int) -> list[SourceObject]:
-    """Deterministically sample discussions that have enough text to identify."""
+def _eligible(session: Session, repo: Repository) -> list[SourceObject]:
+    """Every discussion with enough text to be identified by."""
     rows = list(
         session.scalars(
             select(SourceObject)
@@ -241,7 +268,12 @@ def _sample_objects(session: Session, repo: Repository, size: int, seed: int) ->
     # *which* reports are sampled, so changing it changes the population being
     # measured; only the query changed in this revision, and the number stays
     # comparable with the previous one.
-    usable = [row for row in rows if len(object_text(session, row.id) or "") >= MIN_TEXT_CHARS]
+    return [row for row in rows if len(object_text(session, row.id) or "") >= MIN_TEXT_CHARS]
+
+
+def _sample_objects(session: Session, repo: Repository, size: int, seed: int) -> list[SourceObject]:
+    """Deterministically sample reports that have enough text to identify."""
+    usable = _eligible(session, repo)
     rng = random.Random(seed)  # noqa: S311 - sampling a corpus, not a secret
     rng.shuffle(usable)
     return usable[:size]
@@ -315,9 +347,31 @@ def run(sample: int, seed: int) -> HoldoutResult:
         repo = session.scalar(select(Repository))
         if repo is None:
             raise SystemExit("no repository synced; run `rt sync` first")
+        eligible = _eligible(session, repo)
         objects = _sample_objects(session, repo, sample, seed)
         result = HoldoutResult(repo=repo.full_name, sample=len(objects), seed=seed)
         result.control = _positive_control(session, repo)
+        result.provenance = {
+            "seed": seed,
+            "requested_sample": sample,
+            "eligible_reports": len(eligible),
+            "discussions_in_corpus": session.scalar(
+                select(func.count())
+                .select_from(SourceObject)
+                .where(
+                    SourceObject.repo_id == repo.id,
+                    SourceObject.kind == "discussion",
+                    SourceObject.parent_id.is_(None),
+                )
+            ),
+            "signature_rows": session.scalar(
+                select(func.count())
+                .select_from(SymptomSignature)
+                .where(SymptomSignature.repo_id == repo.id)
+            ),
+            "data_as_of": result.control.get("data_as_of"),
+            "sampled_numbers": sorted(o.number for o in objects if o.number is not None),
+        }
         for index, obj in enumerate(objects, start=1):
             result.cases.append(_ask_without(session, repo, obj))
             if index % 10 == 0:
@@ -326,51 +380,116 @@ def run(sample: int, seed: int) -> HoldoutResult:
     return result
 
 
+def _pooled(results: list[HoldoutResult]) -> dict[str, Any]:
+    """Numbers across every seed run, kept separate from any single run.
+
+    Reported so that a repeatable fixture and an estimate are not the same
+    object: the fixed 60 is a regression, and this is the wider measurement.
+    """
+    sample = sum(r.sample for r in results)
+    proposals = sum(len(r.proposals) for r in results)
+    matches = sum(len(r.identified) for r in results)
+    opportunities = sum(len(r.opportunities) for r in results)
+    return {
+        "seeds": [r.seed for r in results],
+        "reports": sample,
+        "distinct_reports": len({n for r in results for n in r.provenance["sampled_numbers"]}),
+        "other_report_match_rate": round(matches / sample, 4) if sample else 0.0,
+        "proposal_opportunity_count": opportunities,
+        "other_report_proposal_count": proposals,
+        "other_report_proposal_rate_overall": round(proposals / sample, 4) if sample else 0.0,
+        "other_report_proposal_rate_given_opportunity": (
+            round(proposals / opportunities, 4) if opportunities else None
+        ),
+        "not_an_error_rate": (
+            "machine-counted; genuine duplicates are included, and separating them is a "
+            "reading recorded in evals/holdout_judgement.md"
+        ),
+    }
+
+
+def _print(payload: dict[str, Any], result: HoldoutResult) -> None:
+    overall = payload["other_report_proposal_rate_overall"]
+    conditional = payload["other_report_proposal_rate_given_opportunity"]
+    print(
+        f"seed {result.seed}: {len(result.identified)}/{result.sample} matched another report; "
+        f"{len(result.opportunities)} could reach a version action; {len(result.proposals)} did"
+    )
+    match_rate = payload["other_report_match_rate"]["value"]
+    opportunities = payload["proposal_opportunity_count"]["value"]
+    print(f"  other_report_match_rate                      = {match_rate}")
+    print(f"  proposal_opportunity_count                   = {opportunities}")
+    print(
+        f"  other_report_proposal_rate_overall           = {overall['value']} "
+        f"({overall['numerator']}/{overall['denominator']})"
+    )
+    print(
+        f"  other_report_proposal_rate_given_opportunity = {conditional['value']} "
+        f"({conditional['numerator']}/{conditional['denominator']})"
+    )
+    control = payload["positive_control"]
+    print(
+        f"  positive_control                             = "
+        f"{'reaches a proposal' if control['reaches_a_proposal'] else 'DOES NOT REACH ONE'}"
+    )
+    for case in result.identified:
+        marker = "PROPOSES" if case.proposes_change else "matched "
+        print(f"    {marker} #{case.number} {case.title[:60]!r} -> {case.matched_url}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sample", type=int, default=60)
-    parser.add_argument("--seed", type=int, default=20260904)
+    parser.add_argument(
+        "--seed",
+        default="20260904",
+        help="one seed, or several separated by commas for a multi-seed measurement",
+    )
+    parser.add_argument(
+        "--out",
+        default="holdout.json",
+        help="report file name; use a different one to keep a fixture run and a wider "
+        "measurement side by side",
+    )
     args = parser.parse_args()
 
-    result = run(args.sample, args.seed)
+    seeds = [int(part) for part in str(args.seed).split(",") if part.strip()]
+    results = [run(args.sample, seed) for seed in seeds]
+
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    path = REPORTS_DIR / "holdout.json"
-    payload = result.to_json()
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    path = REPORTS_DIR / args.out
+    payloads = [r.to_json() for r in results]
+    document: dict[str, Any] = {"runs": payloads}
+    if len(results) > 1:
+        document["pooled"] = _pooled(results)
+    path.write_text(json.dumps(document, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    print(
-        f"{len(result.identified)}/{result.sample} real reports matched another report; "
-        f"{len(result.opportunities)} of those could reach a version action; "
-        f"{len(result.proposals)} would"
-    )
-    print(f"  other_report_match_rate    = {payload['other_report_match_rate']['value']}")
-    print(f"  proposal_opportunity_count = {payload['proposal_opportunity_count']['value']}")
-    print(f"  false_proposal_rate       = {payload['false_proposal_rate']['value']}")
+    failed = False
+    for payload, result in zip(payloads, results, strict=True):
+        _print(payload, result)
+        if not payload["positive_control"]["reaches_a_proposal"]:
+            print(
+                "\nFAIL: the positive control did not reach a proposal, so a zero rate "
+                "would describe this harness rather than the engine"
+            )
+            failed = True
+        measured = payload["other_report_proposal_rate_overall"]["value"]
+        if measured > MAX_OTHER_REPORT_PROPOSAL_RATE:
+            print(
+                f"\nFAIL: other_report_proposal_rate_overall {measured} exceeds "
+                f"{MAX_OTHER_REPORT_PROPOSAL_RATE} (docs/threat_model.md)"
+            )
+            failed = True
+
+    if "pooled" in document:
+        pooled = document["pooled"]
+        print(
+            f"\npooled over {len(seeds)} seeds: {pooled['distinct_reports']} distinct reports, "
+            f"overall {pooled['other_report_proposal_rate_overall']}, "
+            f"given opportunity {pooled['other_report_proposal_rate_given_opportunity']}"
+        )
     print(f"  written to {path}")
-    for case in result.identified:
-        marker = "PROPOSES" if case.proposes_change else "matched "
-        print(f"  {marker} #{case.number} {case.title[:64]!r} -> {case.matched_url}")
-
-    control = payload["positive_control"]
-    print(
-        f"  positive_control          = "
-        f"{'reaches a proposal' if control['reaches_a_proposal'] else 'DOES NOT REACH ONE'}"
-    )
-    if not control["reaches_a_proposal"]:
-        print(
-            "\nFAIL: the positive control did not reach a proposal, so a zero "
-            "false_proposal_rate would describe this harness rather than the engine"
-        )
-        return 1
-
-    measured = payload["false_proposal_rate"]["value"]
-    if measured > MAX_FALSE_PROPOSAL_RATE:
-        print(
-            f"\nFAIL: false_proposal_rate {measured} exceeds {MAX_FALSE_PROPOSAL_RATE} "
-            f"(docs/threat_model.md)"
-        )
-        return 1
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
