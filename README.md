@@ -1,11 +1,12 @@
 # Repository Troubleshooter
 
+English | [简体中文](README.zh-CN.md)
+
 An evidence-constrained troubleshooting agent that understands how open-source software
 evolves across versions.
 
 > "I am on this version, in this runtime, and I hit this error. What should I actually do?"
 
-It is not a GitHub chat, not a repository chat, not a generic RAG, not a coding agent.
 It answers one narrow question well: **given your version and your environment, is this a
 known incident, and what is the correct next action** — including the answer
 `insufficient_evidence`, which is a first-class product state, not a failure.
@@ -104,9 +105,3 @@ src/repo_troubleshooter/
   retrieval/evidence/diagnosis/verifier   later phases
   cli, mcp            the only two interfaces in V1
 ```
-
-## Non-goals for V1
-
-No GraphRAG, no Neo4j, no multi-agent, no long-term memory, no web UI, no automatic GitHub
-replies, no whole-codebase embedding, no automatic "which commit introduced the bug".
-PostgreSQL only, until a benchmark proves it is the bottleneck.
