@@ -355,11 +355,11 @@ database that is down, empty, foreign or stale fails within ~3 seconds with a
 command to run, never a traceback; MCP returns a structured error instead of
 hanging.
 
-**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **470
+**Verification evidence.** `uv run mypy src` → success; `uv run pytest` → **475
 passed**, measured. The suite has grown each round - 118, 146, 157, 178, 188,
-216, 263, 291, 320, 354, 355, 374, 402, 438, 462, 467, now 470 - so a number
-quoted from an earlier round no longer matches, and several places in this
-document had gone on quoting one.
+216, 263, 291, 320, 354, 355, 374, 402, 438, 462, 467, 470, now 475 - so a
+number quoted from an earlier round no longer matches, and several places in
+this document had gone on quoting one.
 `tests/test_mcp_roundtrip.py`
 drives a real MCP SDK client: lists tools, calls both, asserts CLI/MCP parity on
 status, action, target, `incident.matched`, `stages.stopped_at` and the
@@ -404,7 +404,7 @@ design. The second repository has not been started.
 ## 7. Delivery
 
 **Current fact.** Local gates all pass: `uv sync --extra dev --frozen`,
-`ruff check .`, `ruff format --check .`, `mypy src`, `pytest` (470 tests),
+`ruff check .`, `ruff format --check .`, `mypy src`, `pytest` (475 tests),
 `evals/runner.py`, `docker compose up -d`, `db init`, `db ping`, `status`,
 `uv build`, and a clean-venv install of the built wheel running `db init`, a
 real `diagnose` against the synced database, and the same `diagnose` over stdio
@@ -1261,14 +1261,68 @@ Naming an unrelated package is not authorisation either. CLI and a freshly
 launched stdio MCP process agree on all three. 470 tests pass; evals **70/71**
 with the one long-standing gap; ruff, format and mypy clean.
 
-**Remaining target.** The second authorisation source - the user confirming the
-reading echoed back to them - is not built. Until it is, a report that states no
-package can only ever be a proposal, which is a real recall cost for anyone who
-pastes an error and expects an answer. That echo is the next step.
+**Remaining target.** *(Built; see section 23.)* The second authorisation
+source - the user confirming the reading echoed back to them - was missing when
+this section was written, and until it existed a report that named no package
+could only be a proposal.
 
 **Blockers.** None known, with the same meaning as in section 21: no input
 demonstrated to produce an unsafe action is currently unfixed. The hidden
 acceptance set is not ours to run; no remote is configured.
+
+---
+
+## 23. Showing the reading
+
+**Current fact.** The second authorisation source is built: **the user
+confirming what the tool understood**.
+
+Shallow parsing will misread some reports, and no amount of further rules fixes
+that. What makes a misreading survivable is showing it. Every answer now carries
+an `understood` block holding everything the gate acted on, separated by where
+it came from:
+
+| field | where it came from |
+|---|---|
+| `packages_stated` | the user's own fields |
+| `failing` / `used` / `cleared` / `contradictory` / `role_undetermined` | read out of prose |
+| `quoted_packages` | found inside quoted material, shown rather than asserted |
+| `unread_claims` | sentences that state a condition in words the reader could not classify |
+| `core_version` / `runtime` / `os` | the user's own fields |
+| `proposed_action` / `proposed_target` | what this reading would justify |
+| `digest` | identifies this reading *and* this proposal |
+
+Confirming the digest authorises the proposal: `--confirm <digest>` on the CLI,
+`confirm` over MCP. On a terminal the CLI does it for the user - it prints the
+reading, asks *Is that your situation?*, and answers again with the agreement.
+The engine is deterministic, so the second run reaches the same reading.
+
+**The digest is the point, not a formality.** It covers the reading and the
+proposal together, so agreeing with one reading cannot authorise a different
+one. A report that says something else produces a different digest, and an
+earlier agreement no longer applies - "yes" is an answer about one situation,
+never a setting that stays on.
+
+**What this restores.** Everything the previous section cost. A user who pastes
+an error and names nothing now sees what was understood, agrees, and gets the
+same recommendation as before - with one interaction, and with the reading in
+front of them when they agree to it.
+
+**Verification evidence.** The flagship symptom with no package stated returns
+the incident, the evidence, `requires_confirmation: true` and a digest;
+confirming that digest returns `upgrade -> dsh-v0.1.2-alpha.2` with
+`source: confirmed`. A forged digest authorises nothing. A digest taken from one
+report and replayed onto a different one authorises nothing - measured with two
+reports that differ by one sentence. All of it holds over a freshly launched
+stdio MCP process as well as the installed CLI. 475 tests pass; evals **70/71**;
+ruff, format and mypy clean.
+
+**Remaining target.** The confirmation is only as good as the reading it shows.
+`unread_claims` is capped at six entries for legibility, and a very long report
+can therefore be agreed to without every unread sentence being visible. The
+third step - real-report sampling and a stated threat model - is not started.
+
+**Blockers.** None known, with the meaning given in section 21.
 
 ---
 

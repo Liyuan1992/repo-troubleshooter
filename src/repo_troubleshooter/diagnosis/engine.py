@@ -18,6 +18,8 @@ weaker guess. In particular:
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -33,6 +35,7 @@ from repo_troubleshooter.diagnosis.contract import (
     IncidentSummary,
     RecommendedAction,
     StageReport,
+    Understanding,
 )
 from repo_troubleshooter.evidence import packet as ev
 from repo_troubleshooter.evidence.packet import EvidencePacket
@@ -197,11 +200,55 @@ def _persist_incident_record(
     return f"incident:{repo.id}:{fp.signature_hash[:12]}"
 
 
+def _understanding(
+    request: DiagnosisRequest,
+    features: feat.SymptomFeatures,
+    incident: IncidentSummary,
+    action: RecommendedAction,
+) -> Understanding:
+    """Everything the gate acted on, in a form a person can check."""
+    understood = Understanding(
+        packages_stated=sorted(request.packages),
+        failing=sorted(features.subject_packages),
+        used=sorted(features.subject_dependencies),
+        cleared=sorted(features.subject_confirmed_non_primary),
+        contradictory=sorted(features.subject_conflicted),
+        role_undetermined=sorted(features.subject_unresolved),
+        quoted_packages=sorted(features.quoted_packages),
+        unread_claims=sorted(
+            {
+                str(a.get("cue", ""))
+                for a in (features.pointed_unread_assertions + features.unresolved_state_assertions)
+                if a.get("cue")
+            }
+        )[:6],
+        core_version=request.core_version,
+        runtime=request.runtime,
+        os=request.os,
+        proposed_action=action.type,
+        proposed_target=action.target,
+    )
+    # The digest covers the reading *and* the proposal, so a confirmation
+    # cannot be carried across to a different reading or a different action.
+    material = json.dumps(
+        {
+            "repo": request.repo,
+            "incident": incident.url or incident.title,
+            **understood.model_dump(mode="json", exclude={"digest"}),
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    understood.digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:12]
+    return understood
+
+
 def _authorize(
     session: Session,
     request: DiagnosisRequest,
     candidate: Any,
     repo: Repository,
+    understood: Understanding,
 ) -> Authorization:
     """Did the user state something that authorises acting on this candidate?
 
@@ -215,12 +262,25 @@ def _authorize(
     refuses them - a contradiction in prose is a reason to stop, and being
     wrong there costs recall, not safety - but it no longer says yes.
     """
+    if request.confirm:
+        if request.confirm == understood.digest:
+            return Authorization(authorized=True, source="confirmed")
+        return Authorization(
+            authorized=False,
+            requires_confirmation=True,
+            missing=[
+                f"the confirmation given ({request.confirm}) is for a different reading than "
+                f"the one below ({understood.digest}); check what changed before agreeing"
+            ],
+        )
+
     if not request.packages:
         return Authorization(
             authorized=False,
+            requires_confirmation=True,
             missing=[
-                "the package you are running, as `--package NAME` - free text can find "
-                "a candidate but does not authorise changing what you run"
+                "either the package you are running, as `--package NAME`, or a confirmation "
+                f"of the reading below: `--confirm {understood.digest}`"
             ],
         )
 
@@ -238,9 +298,10 @@ def _authorize(
         return Authorization(authorized=True, source="structured_package")
     return Authorization(
         authorized=False,
+        requires_confirmation=True,
         missing=[
             f"you named {sorted(stated)[:3]}, which this incident does not mention; "
-            "nothing you stated ties you to it"
+            f"if the reading below is right anyway, confirm it: `--confirm {understood.digest}`"
         ],
     )
 
@@ -639,16 +700,18 @@ def diagnose(
     # One that can authorise an action produces a wrong action. So the two are
     # separated: the packages the user stated as fields decide whether this
     # answer may propose a change.
-    authorization = _authorize(session, request, top, repo)
+    understood = _understanding(request, query_features, incident, action)
+    authorization = _authorize(session, request, top, repo, understood)
     if action.type in DiagnosisResponse.VERSION_ACTIONS and not authorization.authorized:
         authorization.proposed_action = action.type
         authorization.proposed_target = action.target
         action = RecommendedAction(
             type="collect_more_info",
             rationale=(
-                f"this looks like the same incident, and {action.rationale} - but nothing "
-                "you stated identifies the package you are running, so this is a proposal "
-                "rather than a recommendation"
+                f"this looks like the same incident, and {action.rationale} - but this is a "
+                "proposal rather than a recommendation until you say it is your situation: "
+                "check the reading in `understood` and confirm it, or name the package you "
+                "are running"
             ),
             confidence="low",
             evidence_ids=action.evidence_ids,
@@ -675,6 +738,7 @@ def diagnose(
         environment=environment,
         stages=stages,
         authorization=authorization,
+        understood=understood,
         incident=incident,
         applicability=verdict.to_json(),
         claims=claims,

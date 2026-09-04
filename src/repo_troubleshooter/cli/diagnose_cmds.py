@@ -7,6 +7,7 @@ is the whole public surface a caller (or an evaluator) exercises.
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any, NoReturn
@@ -99,6 +100,39 @@ def render(response: DiagnosisResponse, console: Console, trace: Any = None) -> 
         console.print_json(json.dumps(trace.to_json()))
 
 
+def _render_understanding(console: Any, understood: Any) -> None:
+    """Print the reading the answer is waiting on.
+
+    Deliberately plain and complete: the point is that a wrong reading is easy
+    to spot here, before it becomes a recommendation.
+    """
+    console.print("\n[bold]Before advising, check what I read:[/bold]")
+    rows = (
+        ("you stated these packages", understood.packages_stated),
+        ("read as failing", understood.failing),
+        ("read as used", understood.used),
+        ("read as cleared", understood.cleared),
+        ("read as contradictory", understood.contradictory),
+        ("named, role unclear", understood.role_undetermined),
+        ("quoted, not asserted", understood.quoted_packages),
+        ("said in words I could not read", understood.unread_claims),
+    )
+    for label, values in rows:
+        if values:
+            console.print(f"  {label}: {', '.join(str(v) for v in values)}")
+    for label, value in (
+        ("version", understood.core_version),
+        ("runtime", understood.runtime),
+        ("os", understood.os),
+    ):
+        if value:
+            console.print(f"  {label}: {value}")
+    if understood.proposed_action:
+        target = f" -> {understood.proposed_target}" if understood.proposed_target else ""
+        console.print(f"  [bold]would recommend[/bold]: {understood.proposed_action}{target}")
+    console.print(f"  (digest {understood.digest})")
+
+
 def register(
     app: typer.Typer,
     console: Console,
@@ -135,6 +169,17 @@ def register(
                 help=(
                     "A package you are running, by name. Repeatable. "
                     "Free text finds candidates; this is what authorises advice."
+                ),
+            ),
+        ] = None,
+        confirm: Annotated[
+            str | None,
+            typer.Option(
+                "--confirm",
+                help=(
+                    "Agree with a reading this tool echoed back, by its digest. "
+                    "The other way to authorise advice, for when the report speaks "
+                    "for itself and you would rather not name packages."
                 ),
             ),
         ] = None,
@@ -179,6 +224,7 @@ def register(
             plugins=plugins,
             config_keys=list(config_key or []),
             packages=list(package or []),
+            confirm=confirm,
         )
 
         from repo_troubleshooter.relations.signatures import SignaturesStale
@@ -186,6 +232,23 @@ def register(
         try:
             with db.session_scope() as session:
                 response, _packet, trace = run_diagnosis(request, session, persist=not no_persist)
+                # Somebody is there and the answer is waiting on them: show the
+                # reading, ask, and answer again with their agreement. The
+                # engine is deterministic, so the second run reaches the same
+                # reading and the same digest.
+                if (
+                    not as_json
+                    and confirm is None
+                    and response.authorization.requires_confirmation
+                    and response.understood is not None
+                    and sys.stdin.isatty()
+                ):
+                    _render_understanding(console, response.understood)
+                    if typer.confirm("Is that your situation?", default=False):
+                        request = request.model_copy(update={"confirm": response.understood.digest})
+                        response, _packet, trace = run_diagnosis(
+                            request, session, persist=not no_persist
+                        )
         except SignaturesStale as exc:
             fail("symptom signatures are stale or missing\n" + str(exc))
 

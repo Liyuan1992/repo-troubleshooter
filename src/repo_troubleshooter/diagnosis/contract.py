@@ -75,6 +75,40 @@ class PluginSpec(BaseModel):
     version: str | None = None
 
 
+class Understanding(BaseModel):
+    """What the tool took the report to be saying, in the user's own terms.
+
+    Shallow parsing of English will misread some reports; that is not fixable
+    by more rules. What makes a misreading survivable is showing it. Everything
+    the gate acted on appears here, separated by where it came from - what the
+    user stated as fields, and what was read out of prose - so a wrong reading
+    is visible before it becomes a recommendation rather than after.
+    """
+
+    #: Packages the user stated as fields.
+    packages_stated: list[str] = Field(default_factory=list)
+    #: Packages read out of prose, by the role the reading gave them.
+    failing: list[str] = Field(default_factory=list)
+    used: list[str] = Field(default_factory=list)
+    cleared: list[str] = Field(default_factory=list)
+    contradictory: list[str] = Field(default_factory=list)
+    role_undetermined: list[str] = Field(default_factory=list)
+    #: Packages and claims found inside quoted material, which is shown rather
+    #: than asserted and never carries identity on its own.
+    quoted_packages: list[str] = Field(default_factory=list)
+    #: Sentences that state a condition in words the reader could not classify.
+    unread_claims: list[str] = Field(default_factory=list)
+    core_version: str | None = None
+    runtime: str | None = None
+    os: str | None = None
+    #: What this answer would recommend if the reading is right.
+    proposed_action: str | None = None
+    proposed_target: str | None = None
+    #: Identifies *this* reading and *this* proposal. A confirmation carries it
+    #: back, so agreeing to one reading cannot authorise a different one.
+    digest: str = ""
+
+
 class Authorization(BaseModel):
     """Whether anything authorised recommending a change, and what.
 
@@ -91,6 +125,8 @@ class Authorization(BaseModel):
     proposed_action: str | None = None
     proposed_target: str | None = None
     missing: list[str] = Field(default_factory=list)
+    #: True when confirming the echoed reading would authorise the proposal.
+    requires_confirmation: bool = False
 
 
 class DiagnosisRequest(BaseModel):
@@ -108,6 +144,10 @@ class DiagnosisRequest(BaseModel):
     # authorise an action is a wrong action. A misreading that can only *find*
     # a candidate is a wrong suggestion, which the user sees and rejects.
     packages: list[str] = Field(default_factory=list)
+    #: The digest of a reading the user has agreed with, echoed back from a
+    #: previous answer. Confirming is the second authorisation source: it says
+    #: "yes, that is my situation", about one specific reading.
+    confirm: str | None = None
     plugins: list[PluginSpec] = Field(default_factory=list)
     # Key NAMES only. Values are never requested.
     config_keys: list[str] = Field(default_factory=list)
@@ -233,6 +273,7 @@ class DiagnosisResponse(BaseModel):
     fingerprint: dict[str, Any] = Field(default_factory=dict)
     provider: str = "deterministic"
     authorization: Authorization = Field(default_factory=Authorization)
+    understood: Understanding | None = None
 
     # Actions that change what the user runs. Only stage 3 may produce these.
     VERSION_ACTIONS: ClassVar[frozenset[str]] = frozenset(

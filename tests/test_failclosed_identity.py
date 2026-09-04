@@ -236,6 +236,7 @@ def cli_diagnose(
     version: str = "0.1.2-alpha.1",
     debug: bool = False,
     packages: tuple[str, ...] = (STATED_PACKAGE,),
+    confirm: str | None = None,
 ) -> dict:
     executable = BIN / f"repo-troubleshooter{EXE}"
     argv = (
@@ -260,6 +261,8 @@ def cli_diagnose(
     ]
     for name in packages:
         argv += ["--package", name]
+    if confirm:
+        argv += ["--confirm", confirm]
     if debug:
         argv.append("--debug")
     proc = subprocess.run(  # noqa: S603
@@ -281,6 +284,7 @@ def stdio_mcp_diagnose(
     *,
     version: str = "0.1.2-alpha.1",
     packages: tuple[str, ...] = (STATED_PACKAGE,),
+    confirm: str | None = None,
 ) -> dict[str, Any]:
     """A freshly launched `repo-troubleshooter-mcp` process, spoken to over stdio."""
     from mcp import Client
@@ -303,6 +307,7 @@ def stdio_mcp_diagnose(
                     "error": error,
                     "core_version": version,
                     "packages": list(packages),
+                    "confirm": confirm,
                 },
             )
             payload = result.structured_content
@@ -801,6 +806,62 @@ class TestElevenPhrasingsThroughBothSurfaces:
         assert cli["authorization"]["authorized"] is False
         assert mcp["authorization"]["authorized"] is False
         assert mcp["recommended_action"]["type"] == cli["recommended_action"]["type"]
+
+    def test_the_reading_is_echoed_before_anything_is_recommended(self):
+        """The answer to a misreading is to show it, not to parse harder.
+
+        Everything the gate acted on comes back in `understood`, split by where
+        it came from - stated as fields, read out of prose, or found inside
+        quoted material - together with the action that reading would justify.
+        """
+        payload = cli_diagnose(self.REAL_SYMPTOM, packages=())
+        understood = payload["understood"]
+        assert understood["failing"], "the reading must say what it took to be failing"
+        assert understood["proposed_action"] == "upgrade"
+        assert understood["proposed_target"] == "dsh-v0.1.2-alpha.2"
+        assert understood["digest"]
+        assert payload["authorization"]["requires_confirmation"] is True
+
+    def test_confirming_the_reading_authorises_the_action(self):
+        """The second authorisation source, and the one that keeps the recall."""
+        proposal = cli_diagnose(self.REAL_SYMPTOM, packages=())
+        digest = proposal["understood"]["digest"]
+        confirmed = cli_diagnose(self.REAL_SYMPTOM, packages=(), confirm=digest)
+        assert confirmed["authorization"]["authorized"] is True
+        assert confirmed["authorization"]["source"] == "confirmed"
+        assert confirmed["recommended_action"]["type"] == "upgrade"
+        assert confirmed["recommended_action"]["target"] == "dsh-v0.1.2-alpha.2"
+
+    def test_a_confirmation_cannot_be_replayed_onto_another_reading(self):
+        """Agreeing with one reading is not agreeing with the next one.
+
+        The digest covers the reading *and* the proposal, so a report that says
+        something different gets a different digest and the old agreement no
+        longer applies. Without that, "yes" would be a permanent setting rather
+        than an answer about one situation.
+        """
+        other = self.REAL_SYMPTOM + " We also use @nebula/theme-engine, which is healthy."
+        first = cli_diagnose(self.REAL_SYMPTOM, packages=())
+        second = cli_diagnose(other, packages=())
+        assert first["understood"]["digest"] != second["understood"]["digest"]
+
+        replayed = cli_diagnose(other, packages=(), confirm=first["understood"]["digest"])
+        assert replayed["authorization"]["authorized"] is False
+        assert replayed["recommended_action"]["type"] not in UNSAFE
+
+    def test_a_forged_digest_authorises_nothing(self):
+        payload = cli_diagnose(self.REAL_SYMPTOM, packages=(), confirm="deadbeef1234")
+        assert payload["authorization"]["authorized"] is False
+        assert payload["recommended_action"]["type"] not in UNSAFE
+
+    def test_confirmation_works_over_mcp_too(self):
+        """A client that cannot prompt still has the channel available."""
+        proposal = stdio_mcp_diagnose(self.REAL_SYMPTOM, packages=())
+        assert proposal["authorization"]["requires_confirmation"] is True
+        digest = proposal["understood"]["digest"]
+        confirmed = stdio_mcp_diagnose(self.REAL_SYMPTOM, packages=(), confirm=digest)
+        assert confirmed["authorization"]["source"] == "confirmed"
+        assert confirmed["recommended_action"]["target"] == "dsh-v0.1.2-alpha.2"
 
     def test_a_quotation_alongside_a_stated_report_costs_nothing(self):
         """The presence of a quotation does not by itself cost a positive.

@@ -107,6 +107,7 @@ def diagnose(
     plugins: list[dict[str, str | None]] | None = None,
     config_keys: list[str] | None = None,
     packages: list[str] | None = None,
+    confirm: str | None = None,
 ) -> dict[str, Any]:
     """Diagnose one problem. `runtime` is free text such as "node 24.11.1"."""
     failure = _guard()
@@ -123,6 +124,7 @@ def diagnose(
         plugins=[PluginSpec.model_validate(item) for item in (plugins or [])],
         config_keys=list(config_keys or []),
         packages=list(packages or []),
+        confirm=confirm,
     )
     try:
         with db.session_scope() as session:
