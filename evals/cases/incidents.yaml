@@ -66,6 +66,9 @@ cases:
       \ = this.resolveOptions()\n    return ((options.apiKey?.length ?? 0) > 0 || options.resolveApiKey\
       \ !== undefined)\n      && URL.canParse(options.baseURL)\n      && isPositiveInteger(options.maxTokens)\n\
       \      && isPositiveInteger(options.maxUses)\n  }\n"
+    # The source-language assertion is not machine-readable. Keep the report
+    # type explicit instead of adding another phrase rule to the classifier.
+    report_kind: failure
     core_version: 0.1.0-rc.7
   expect:
     matched_incident: true
@@ -123,6 +126,9 @@ cases:
       ,\n            api_key=\"sk-***\",\n        )\n    ) as harness:\n        query = input(\"user->\"\
       )\n        result = harness.run(query, session_id=\"id-123\")\n\n        print(result.session_root,\
       \ result.session_id)\n        print(result.final_response)\n"
+    # This real bug title is outside the deterministic reader's language
+    # coverage; model it as the explicit structured declaration a caller uses.
+    report_kind: failure
     core_version: 0.1.0-rc.7
   expect:
     matched_incident: true

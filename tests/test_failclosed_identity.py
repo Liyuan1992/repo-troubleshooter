@@ -237,6 +237,7 @@ def cli_diagnose(
     debug: bool = False,
     packages: tuple[str, ...] = (STATED_PACKAGE,),
     confirm: str | None = None,
+    anchors: tuple[str, ...] = (),
 ) -> dict:
     executable = BIN / f"repo-troubleshooter{EXE}"
     argv = (
@@ -261,6 +262,8 @@ def cli_diagnose(
     ]
     for name in packages:
         argv += ["--package", name]
+    for anchor in anchors:
+        argv += ["--anchor", anchor]
     if confirm:
         argv += ["--confirm", confirm]
     if debug:
@@ -285,6 +288,7 @@ def stdio_mcp_diagnose(
     version: str = "0.1.2-alpha.1",
     packages: tuple[str, ...] = (STATED_PACKAGE,),
     confirm: str | None = None,
+    anchors: tuple[dict[str, str], ...] = (),
 ) -> dict[str, Any]:
     """A freshly launched `repo-troubleshooter-mcp` process, spoken to over stdio."""
     from mcp import Client
@@ -308,6 +312,7 @@ def stdio_mcp_diagnose(
                     "core_version": version,
                     "packages": list(packages),
                     "confirm": confirm,
+                    "anchors": list(anchors),
                 },
             )
             payload = result.structured_content
@@ -806,6 +811,26 @@ class TestElevenPhrasingsThroughBothSurfaces:
         assert cli["authorization"]["authorized"] is False
         assert mcp["authorization"]["authorized"] is False
         assert mcp["recommended_action"]["type"] == cli["recommended_action"]["type"]
+
+    def test_anchor_only_narrows_identity_on_both_public_surfaces(self):
+        """A user fact must not become an action authority through MCP or CLI."""
+        cli = cli_diagnose(
+            self.REAL_SYMPTOM,
+            packages=(),
+            anchors=("structural:__dsh_boot__",),
+        )
+        mcp = stdio_mcp_diagnose(
+            self.REAL_SYMPTOM,
+            packages=(),
+            anchors=({"kind": "structural", "value": "__dsh_boot__"},),
+        )
+        for payload in (cli, mcp):
+            assert payload["incident"]["matched"] is True
+            assert payload["authorization"]["authorized"] is False
+            assert payload["recommended_action"]["type"] not in UNSAFE
+            assert payload["understood"]["identity_anchors"] == [
+                {"kind": "structural", "value": "__dsh_boot__"}
+            ]
 
     @pytest.mark.parametrize(
         ("case_id", "package"),

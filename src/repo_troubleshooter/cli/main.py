@@ -235,6 +235,62 @@ def sync_cmd(
     console.print(f"sync health: [bold]{report.health}[/bold]")
 
 
+@app.command("prepare")
+def prepare_cmd(
+    profile_name: Annotated[str, typer.Argument(help="Profile name or owner/name")],
+    max_discussions: Annotated[
+        int | None, typer.Option("--max-discussions", help="Scope guard; 0 = unlimited.")
+    ] = None,
+    max_issues: Annotated[
+        int, typer.Option("--max-issues", help="Newest Issues per run; seeds are additional.")
+    ] = 200,
+    max_pull_requests: Annotated[
+        int,
+        typer.Option("--max-pull-requests", help="Newest PRs per run; seeds are additional."),
+    ] = 200,
+    no_docs: Annotated[
+        bool, typer.Option("--no-docs", help="Skip versioned docs snapshots.")
+    ] = False,
+    no_git: Annotated[
+        bool, typer.Option("--no-git", help="Skip clone/fetch (GitHub only).")
+    ] = False,
+    backfill_pages: Annotated[
+        int,
+        typer.Option(
+            "--backfill-pages",
+            help="Also walk N more pages of older discussions; resumes where it stopped.",
+        ),
+    ] = 0,
+) -> None:
+    """Initialise the local database and sync one evidence profile.
+
+    This is the first-use shortcut, not an installer: PostgreSQL must already
+    be reachable and sync still respects the same explicit scope guards as
+    `rt sync`.  Re-running it is safe and resumes normal incremental sync.
+    """
+    try:
+        profile = load_profile(profile_name)
+    except FileNotFoundError as exc:
+        _fail(str(exc))
+    db_init()
+    sync_cmd(
+        profile_name=profile_name,
+        full=False,
+        max_discussions=max_discussions,
+        max_issues=max_issues,
+        max_pull_requests=max_pull_requests,
+        no_docs=no_docs,
+        no_git=no_git,
+        backfill_pages=backfill_pages,
+        as_json=False,
+    )
+    console.print(
+        "next: `rt diagnose --repo "
+        f"{profile.repo} --error-file report.txt` "
+        "(or run it inside a detected workspace)"
+    )
+
+
 @app.command("status")
 def status_cmd(
     repo: Annotated[str | None, typer.Argument(help="owner/name; omit for all")] = None,

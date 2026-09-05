@@ -17,15 +17,17 @@ candidate is not a match, and only stage 2 may set ``incident.matched``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Session
 
+from repo_troubleshooter.diagnosis.contract import StructuredAnchor
 from repo_troubleshooter.fingerprint.error import ErrorFingerprint
 from repo_troubleshooter.fingerprint.features import SymptomFeatures
 from repo_troubleshooter.relations import signatures
+from repo_troubleshooter.retrieval import anchors as structured_anchors
 from repo_troubleshooter.retrieval import candidates as token_channel
 from repo_troubleshooter.retrieval.identity import IdentityVerdict, evaluate
 from repo_troubleshooter.versions.packages import PackageFamily
@@ -310,6 +312,7 @@ def identify(
     outcome: RetrievalOutcome,
     max_checks: int = MAX_IDENTITY_CHECKS,
     family: PackageFamily | None = None,
+    anchors: tuple[StructuredAnchor, ...] = (),
 ) -> RetrievalOutcome:
     """Stage 2: decide which candidate, if any, is the *same incident*."""
     query_values = (
@@ -338,6 +341,19 @@ def identify(
             corpus_objects=outcome.corpus_objects,
             package_family=family,
         )
+        mismatched = structured_anchors.mismatches(anchors, candidate_features)
+        if candidate.identity.accepted and mismatched:
+            candidate.identity = replace(
+                candidate.identity,
+                accepted=False,
+                rejection="structured_anchor_mismatch",
+                rule=None,
+                reasons=[
+                    *candidate.identity.reasons,
+                    "candidate does not demonstrate required structured anchor(s): "
+                    + ", ".join(structured_anchors.labels(tuple(mismatched))),
+                ],
+            )
 
     accepted = [c for c in outcome.candidates if c.identity is not None and c.identity.accepted]
     if accepted:
@@ -353,6 +369,7 @@ def retrieve_and_identify(
     fingerprint: ErrorFingerprint,
     features: SymptomFeatures,
     limit: int = MAX_CANDIDATES,
+    anchors: tuple[StructuredAnchor, ...] = (),
 ) -> RetrievalOutcome:
     family = PackageFamily.load(session, repo_id)
     outcome = retrieve(
@@ -364,5 +381,10 @@ def retrieve_and_identify(
         family=family,
     )
     return identify(
-        session, repo_id=repo_id, query_features=features, outcome=outcome, family=family
+        session,
+        repo_id=repo_id,
+        query_features=features,
+        outcome=outcome,
+        family=family,
+        anchors=anchors,
     )

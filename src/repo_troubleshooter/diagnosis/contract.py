@@ -19,6 +19,14 @@ from typing import Any, ClassVar, Literal
 from pydantic import BaseModel, Field, field_validator
 
 Status = Literal["confirmed", "probable", "insufficient_evidence", "conflicting"]
+ReportKind = Literal["failure", "question", "idea", "unknown"]
+AnchorKind = Literal[
+    "error",
+    "structural",
+    "subject_package",
+    "subject_path",
+    "subject_module",
+]
 ActionType = Literal[
     "upgrade",
     "downgrade",
@@ -75,6 +83,42 @@ class PluginSpec(BaseModel):
     version: str | None = None
 
 
+class StructuredAnchor(BaseModel):
+    """One user-supplied, checkable fact used to reject wrong candidates.
+
+    An anchor narrows retrieval only. It is deliberately not an authorization
+    source: a report can contain the exact same error code while still being
+    about a different failure, and no prose-derived fact may authorise a
+    version-changing recommendation.
+    """
+
+    kind: AnchorKind
+    value: str = Field(min_length=1, max_length=300)
+
+    @field_validator("value")
+    @classmethod
+    def _normalise_value(cls, value: str) -> str:
+        normalised = " ".join(value.strip().lower().split())
+        if not normalised:
+            raise ValueError("anchor value must not be blank")
+        return normalised
+
+
+class ReportAssessment(BaseModel):
+    """Whether the input is sufficiently evidenced as a failure report.
+
+    This is intentionally a report-quality classification, not an incident
+    identity claim. It may stop a candidate proposal, but it never accepts an
+    incident and never authorises an action.
+    """
+
+    kind: ReportKind = "unknown"
+    basis: Literal["declared", "observed", "insufficient"] = "insufficient"
+    retrieval_allowed: bool = False
+    observed_evidence: list[str] = Field(default_factory=list)
+    rationale: str = ""
+
+
 class Understanding(BaseModel):
     """What the tool took the report to be saying, in the user's own terms.
 
@@ -101,6 +145,10 @@ class Understanding(BaseModel):
     quoted_packages: list[str] = Field(default_factory=list)
     #: Sentences that state a condition in words the reader could not classify.
     unread_claims: list[str] = Field(default_factory=list)
+    #: Explicit, structured facts supplied to reject incompatible candidates.
+    #: They narrow candidate identity only; they are not action authority.
+    identity_anchors: list[StructuredAnchor] = Field(default_factory=list)
+    report_assessment: ReportAssessment | None = None
     core_version: str | None = None
     runtime: str | None = None
     os: str | None = None
@@ -152,6 +200,9 @@ class DiagnosisRequest(BaseModel):
     repo: str
     error: str | None = None
     question: str | None = None
+    #: Optional caller declaration. The default is deliberately unknown rather
+    #: than assuming every upstream post is an incident report.
+    report_kind: ReportKind = "unknown"
     core_version: str | None = None
     runtime: str | None = None  # e.g. "node 24.11.1"
     os: str | None = None  # e.g. "windows"
@@ -166,6 +217,7 @@ class DiagnosisRequest(BaseModel):
     # authorise an action is a wrong action. A misreading that can only *find*
     # a candidate is a wrong suggestion, which the user sees and rejects.
     packages: list[str] = Field(default_factory=list)
+    identity_anchors: list[StructuredAnchor] = Field(default_factory=list)
     #: The digest of a reading the user has agreed with, echoed back from a
     #: previous answer. Confirming is the second authorisation source: it says
     #: "yes, that is my situation", about one specific reading.
@@ -210,6 +262,8 @@ class DiagnosisRequest(BaseModel):
             "detected_packages": self.detected_packages,
             "context_sources": self.context_sources,
             "context_warnings": self.context_warnings,
+            "report_kind": self.report_kind,
+            "identity_anchors": [anchor.model_dump() for anchor in self.identity_anchors],
         }
 
 
@@ -298,6 +352,7 @@ class DiagnosisResponse(BaseModel):
     fingerprint: dict[str, Any] = Field(default_factory=dict)
     provider: str = "deterministic"
     authorization: Authorization = Field(default_factory=Authorization)
+    report_assessment: ReportAssessment = Field(default_factory=ReportAssessment)
     understood: Understanding | None = None
 
     # Actions that change what the user runs. Only stage 3 may produce these.

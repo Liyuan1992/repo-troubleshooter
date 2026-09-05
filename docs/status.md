@@ -1869,6 +1869,50 @@ coverage remains bounded by GitHub API budget and time.
 
 ---
 
+## 31. First-use flow and calibrated structured constraints
+
+**Current fact.** `rt prepare PROFILE` now performs the repeatable first-use
+sequence: it initialises or migrates the local database and invokes the same
+bounded, resumable sync as `rt sync`. It does not start PostgreSQL, widen the
+sync scope, or change the user's project. The command prints the concrete next
+diagnosis command after the profile is ready.
+
+**Report type.** Diagnosis now returns `report_assessment` before retrieval.
+Callers can explicitly mark input as `failure`, `question`, or `idea`; the
+default is `unknown`. Without a declaration, only non-quoted structured failure
+evidence can permit retrieval. An unknown report stops for a concrete symptom
+or a transparent `--report-kind failure` declaration. This declaration is not
+an identity proof or authorisation source.
+
+**Structured constraints.** Repeatable `--anchor KIND:VALUE` CLI fields and
+MCP `anchors` accept exact `error`, `structural`, `subject_package`,
+`subject_path`, and `subject_module` values. Every anchor must occur in the
+candidate's non-quoted evidence; otherwise stage two records
+`structured_anchor_mismatch` and cannot expose a matched incident. Passing an
+anchor does not accept identity and cannot authorise advice. Existing explicit
+failing-package and confirmation-digest sources remain the only authorities.
+
+**Calibration evidence.** `evals/structured_anchor_calibration.py` was run
+against the current two local corpora: all 14 manually adjudicated wrong
+DeepSeek/vLLM report-to-candidate pairs were rejected by an anchor present in
+the source report and absent from the candidate; reviewed positives #5084 and
+vLLM #6461 still satisfied their anchors (16/16). This is calibration of the
+one-way structured field contract, not a claim that free text can choose an
+anchor or that a semantic identity model is ready to authorise anything.
+
+**Verification evidence.** Pure contract tests cover report assessment and
+quoted-anchor exclusion. Installed CLI tests assert that `--report-kind
+question` never enters retrieval, a matching anchor preserves a proposal but
+does not authorise it, and a mismatch reaches no incident. The complete suite
+and fresh CLI/MCP verification are recorded only after the final gates below.
+
+**Remaining target.** Run new leave-one-out censuses before replacing the
+existing quality numbers: classification changes the measured population and
+proposal opportunities. A semantic channel remains a separate, unbuilt product
+decision requiring a held-out threshold across repositories.
+
+---
+
 ## Not built
 
 Dense retrieval / RRF, B1-B6 baselines, full backfill,

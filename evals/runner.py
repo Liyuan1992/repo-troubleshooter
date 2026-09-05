@@ -18,12 +18,12 @@ import statistics
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 from sqlalchemy.orm import Session
 
-from repo_troubleshooter.diagnosis.contract import DiagnosisRequest, DiagnosisResponse
+from repo_troubleshooter.diagnosis.contract import DiagnosisRequest, DiagnosisResponse, ReportKind
 from repo_troubleshooter.diagnosis.engine import diagnose
 from repo_troubleshooter.evidence.packet import resolve as resolve_evidence
 from repo_troubleshooter.sync.upsert import get_repository
@@ -186,6 +186,7 @@ def _run(
     runtime: str | None,
     os_name: str | None,
     packages: list[str] | None = None,
+    report_kind: ReportKind = "unknown",
 ) -> tuple[DiagnosisResponse, float]:
     request = DiagnosisRequest(
         repo=repo,
@@ -194,6 +195,7 @@ def _run(
         runtime=runtime,
         os=os_name,
         packages=list(packages or []),
+        report_kind=report_kind,
     )
     started = time.perf_counter()
     response, _packet, _debug = diagnose(request, session, persist=False)
@@ -217,6 +219,7 @@ def run_incidents(session: Session) -> list[CaseResult]:
             runtime=query.get("runtime"),
             os_name=query.get("os"),
             packages=query.get("packages"),
+            report_kind=cast(ReportKind, query.get("report_kind", "unknown")),
         )
         expect = case.get("expect", {})
         failures = _check_common(expect, response)

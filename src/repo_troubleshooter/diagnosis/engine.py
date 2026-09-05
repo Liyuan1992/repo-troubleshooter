@@ -34,9 +34,11 @@ from repo_troubleshooter.diagnosis.contract import (
     DiagnosisResponse,
     IncidentSummary,
     RecommendedAction,
+    ReportAssessment,
     StageReport,
     Understanding,
 )
+from repo_troubleshooter.diagnosis.intent import assess_report
 from repo_troubleshooter.evidence import packet as ev
 from repo_troubleshooter.evidence.packet import EvidencePacket
 from repo_troubleshooter.fingerprint import features as feat
@@ -209,6 +211,7 @@ def _understanding(
     features: feat.SymptomFeatures,
     incident: IncidentSummary,
     action: RecommendedAction,
+    report_assessment: ReportAssessment,
     identity: Any | None = None,
     evidence: list[str] | None = None,
 ) -> Understanding:
@@ -222,6 +225,8 @@ def _understanding(
         contradictory=sorted(features.subject_conflicted),
         role_undetermined=sorted(features.subject_unresolved),
         quoted_packages=sorted(features.quoted_packages),
+        identity_anchors=list(request.identity_anchors),
+        report_assessment=report_assessment,
         unread_claims=sorted(
             {
                 str(a.get("cue", ""))
@@ -396,9 +401,35 @@ def diagnose(
         base.missing_information = ["the exact error message or symptom"]
         return base, packet, debug
 
+    report_assessment = assess_report(request, query_features)
+    base.report_assessment = report_assessment
+    if not report_assessment.retrieval_allowed:
+        if report_assessment.kind in {"question", "idea"}:
+            base.recommended_action = RecommendedAction(
+                type="abstain", rationale=report_assessment.rationale
+            )
+        else:
+            base.recommended_action = RecommendedAction(
+                type="collect_more_info",
+                rationale=(
+                    "no incident was proposed because the input is not yet evidenced as an "
+                    "observed failure outside quoted material"
+                ),
+            )
+        base.missing_information = [
+            "one concrete observed symptom or error from the current environment, "
+            "or an explicit `--report-kind failure` declaration if the report is genuine "
+            "but lacks a machine-readable witness"
+        ]
+        return base, packet, debug
+
     # --- stage 1: retrieved_candidate, stage 2: accepted_same_incident -----
     outcome = pipeline.retrieve_and_identify(
-        session, repo_id=repo.id, fingerprint=fp, features=query_features
+        session,
+        repo_id=repo.id,
+        fingerprint=fp,
+        features=query_features,
+        anchors=tuple(request.identity_anchors),
     )
     debug.retrieval = outcome.to_json()
 
@@ -756,6 +787,7 @@ def diagnose(
         query_features,
         incident,
         action,
+        report_assessment,
         identity=identity,
         evidence=[f"{item.source_type}:{item.locator}" for item in packet.items.values()],
     )
@@ -796,6 +828,7 @@ def diagnose(
         environment=environment,
         stages=stages,
         authorization=authorization,
+        report_assessment=report_assessment,
         understood=understood,
         incident=incident,
         applicability=verdict.to_json(),

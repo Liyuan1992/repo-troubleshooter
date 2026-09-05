@@ -117,6 +117,22 @@ class TestServerSurface:
 
 
 class TestContractParity:
+    def test_mcp_declared_question_stops_before_candidate_retrieval(self):
+        payload = _call(
+            "diagnose",
+            {
+                "repo": REPO,
+                "question": "Can I configure the retry timeout?",
+                "report_kind": "question",
+            },
+        )["result"]
+
+        assert payload["report_assessment"]["kind"] == "question"
+        assert payload["report_assessment"]["retrieval_allowed"] is False
+        assert payload["stages"]["retrieved_candidates"] == 0
+        assert payload["incident"]["matched"] is False
+        assert payload["recommended_action"]["type"] == "abstain"
+
     def test_mcp_and_cli_agree_on_the_positive_case(self):
         mcp_payload = _call(
             "diagnose",

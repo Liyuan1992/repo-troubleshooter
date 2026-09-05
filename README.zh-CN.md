@@ -39,13 +39,15 @@ Repository Troubleshooter 会检索仓库中的讨论、发布版本、提交历
 docker compose up -d
 uv sync --extra dev
 cp .env.example .env
-uv run rt db init
+uv run rt prepare deepseek-harness --max-discussions 200
 ```
 
 PowerShell 请将复制命令改为 `Copy-Item .env.example .env`。如果本机已经通过
-`gh auth login` 登录 GitHub，可以不填写 GitHub Token。
+`gh auth login` 登录 GitHub，可以不填写 GitHub Token。`prepare` 会创建或升级本地数据库并完成
+首次、有范围限制的同步；可以安全重复运行，中断后也可继续。它不会自行启动 Docker，也不会超出你给出的
+同步范围。
 
-## 同步仓库数据
+## 管理仓库证据
 
 ```bash
 uv run rt profiles
@@ -71,11 +73,19 @@ cd /path/to/project
 rt diagnose --error-file report.txt
 ```
 
-CLI 会从当前项目自动获取证据仓库、已安装版本、运行时、操作系统和相关包，并在确认前回显
-每个值及其来源。检测到某个依赖只代表项目使用了它，不会被系统悄悄认定为故障主体。
+CLI 会从当前项目自动获取证据仓库、已安装版本、运行时、操作系统和相关包，并回显每个值及其来源。
+检测到某个依赖只代表项目使用了它，不会被系统悄悄认定为故障主体。
+
+如果找到了已有 release 的已知事件、但没有以字段形式给出故障包，CLI 会先显示它对报告的理解、匹配事件、
+证据和拟议版本，再请求确认摘要。确认的含义仅是“这个已经展示的理解符合我的情况”；它只允许工具给出建议，
+绝不会执行升级、修改配置或改动项目。
 
 `--repo`、`--version`、`--runtime`、`--os` 和 `--package` 仍然保留，用于覆盖远程报告、
 容器环境或无法唯一判断的情况。
+
+报告过于模糊时，可用 `--report-kind failure` 明确说明它是实际观察到的故障；`--report-kind question`
+或 `idea` 会阻止按事件检索。这不是授权来源。如果已知精确的错误码、API 路径、源文件路径、模块或包名，
+可重复使用 `--anchor KIND:VALUE`，拒绝不包含该事实的候选。锚点只会收窄候选，不会授权建议。
 
 需要机器可读结果时使用 `--json`，需要查看候选和判断过程时使用 `--debug`。完整参数请运行
 `uv run rt diagnose --help`。

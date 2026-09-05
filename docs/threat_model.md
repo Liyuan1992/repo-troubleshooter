@@ -42,6 +42,25 @@ A misreading now costs a wrong *proposal* - which the reader sees and rejects -
 instead of a wrong instruction. That is what moves adversarial phrasing from a
 safety problem to a quality problem.
 
+## Report type and structured identity constraints
+
+Before retrieval, the tool labels the input as `failure`, `question`, `idea`,
+or `unknown`. A caller may state the type explicitly. Otherwise only existing,
+non-quoted structured evidence can establish an observed failure: an error or
+named cause, a failing package with a symptom, or a machine marker together
+with a symptom. `unknown` stops before proposing an incident. This trades some
+recall on vague reports for not treating every discussion post as a bug report;
+`--report-kind failure` is a transparent escape hatch, not an authority source.
+
+`--anchor KIND:VALUE` (and MCP `anchors`) accepts an exact error, structural
+token, package, path, or module from the caller. Every supplied anchor must be
+present in a candidate's non-quoted evidence, otherwise stage two rejects it.
+It cannot accept an incident and cannot authorise a recommendation. The
+calibration at `evals/structured_anchor_calibration.py` checks 14 adjudicated
+wrong candidate pairs across both repositories and preserves one known positive
+per repository. It does **not** certify free-text anchor extraction or a
+semantic model; either would need its own held-out acceptance threshold.
+
 ## What counts as done
 
 Measured on **`evals/holdout.py`**: real reports sampled from the synced corpus,

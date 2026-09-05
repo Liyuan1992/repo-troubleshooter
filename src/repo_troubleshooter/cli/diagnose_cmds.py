@@ -10,7 +10,7 @@ import json
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, Any, NoReturn
+from typing import Annotated, Any, NoReturn, cast
 
 import typer
 from rich.console import Console
@@ -48,6 +48,12 @@ def render(response: DiagnosisResponse, console: Console, trace: Any = None) -> 
 
     console.print()
     console.print(f"[bold]Status[/bold]  {response.status}")
+    assessment = response.report_assessment
+    console.print(
+        "[bold]Report assessment[/bold]  "
+        f"{assessment.kind} ({assessment.basis}; "
+        f"retrieval={'yes' if assessment.retrieval_allowed else 'no'})"
+    )
     if response.incident.matched:
         console.print(
             f"Matched incident: {response.incident.title} "
@@ -150,6 +156,10 @@ def _render_understanding(console: Any, understood: Any) -> None:
         ("named, role unclear", understood.role_undetermined),
         ("quoted, not asserted", understood.quoted_packages),
         ("said in words I could not read", understood.unread_claims),
+        (
+            "structured constraints (narrow candidates only)",
+            [f"{anchor.kind}:{anchor.value}" for anchor in understood.identity_anchors],
+        ),
     )
     printed = False
     for label, values in rows:
@@ -196,6 +206,13 @@ def register(
             Path | None, typer.Option("--error-file", help="Read the error text from a file")
         ] = None,
         question: Annotated[str | None, typer.Option("--question")] = None,
+        report_kind: Annotated[
+            str,
+            typer.Option(
+                "--report-kind",
+                help="failure | question | idea | unknown; unknown is the conservative default",
+            ),
+        ] = "unknown",
         core_version: Annotated[
             str | None, typer.Option("--version", "--core-version", help="Installed core version")
         ] = None,
@@ -233,6 +250,17 @@ def register(
                 ),
             ),
         ] = None,
+        anchor: Annotated[
+            list[str] | None,
+            typer.Option(
+                "--anchor",
+                help=(
+                    "Structured candidate constraint, KIND:VALUE (repeatable). "
+                    "Kinds: error, structural, subject_package, subject_path, subject_module. "
+                    "Narrows candidates only; does not authorise advice."
+                ),
+            ),
+        ] = None,
         confirm: Annotated[
             str | None,
             typer.Option(
@@ -261,7 +289,15 @@ def register(
         """Diagnose one problem against synced evidence. Deterministic; no model key needed."""
         require_schema()
 
-        from repo_troubleshooter.diagnosis.contract import DiagnosisRequest, PluginSpec
+        from pydantic import ValidationError
+
+        from repo_troubleshooter.diagnosis.contract import (
+            AnchorKind,
+            DiagnosisRequest,
+            PluginSpec,
+            ReportKind,
+            StructuredAnchor,
+        )
         from repo_troubleshooter.diagnosis.engine import diagnose as run_diagnosis
 
         workspace_path = (workspace or Path.cwd()).expanduser()
@@ -280,6 +316,18 @@ def register(
         for spec in plugin or []:
             name, _, version = spec.partition("@")
             plugins.append(PluginSpec(name=name, version=version or None))
+
+        if report_kind not in {"failure", "question", "idea", "unknown"}:
+            fail("--report-kind must be one of: failure, question, idea, unknown")
+        anchors = []
+        for spec in anchor or []:
+            kind, separator, value = spec.partition(":")
+            if not separator:
+                fail("--anchor must be KIND:VALUE, for example --anchor error:ERR_INVALID_ARG_TYPE")
+            try:
+                anchors.append(StructuredAnchor(kind=cast(AnchorKind, kind), value=value))
+            except ValidationError as exc:
+                fail(f"invalid --anchor {spec!r}: {exc.errors()[0]['msg']}")
 
         from repo_troubleshooter.relations.signatures import SignaturesStale
         from repo_troubleshooter.workspace import build_catalog, inspect_workspace, resolve_context
@@ -333,6 +381,7 @@ def register(
                     repo=detected_repo,
                     error=error_text,
                     question=question,
+                    report_kind=cast(ReportKind, report_kind),
                     core_version=detected_version,
                     runtime=detected_runtime,
                     os=detected_os,
@@ -342,6 +391,7 @@ def register(
                     plugins=plugins,
                     config_keys=list(config_key or []),
                     packages=list(package or []),
+                    identity_anchors=anchors,
                     confirm=confirm,
                 )
                 response, _packet, trace = run_diagnosis(request, session, persist=not no_persist)
@@ -357,7 +407,11 @@ def register(
                     and sys.stdin.isatty()
                 ):
                     _render_understanding(console, response.understood)
-                    if typer.confirm("Is that your situation?", default=False):
+                    if typer.confirm(
+                        "Does this displayed report reading and incident describe your situation? "
+                        "This only authorises a recommendation; it makes no change.",
+                        default=False,
+                    ):
                         request = request.model_copy(update={"confirm": response.understood.digest})
                         response, _packet, trace = run_diagnosis(
                             request, session, persist=not no_persist

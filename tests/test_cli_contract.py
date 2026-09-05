@@ -90,6 +90,25 @@ class TestCommandSurface:
         assert payload["status"] == "insufficient_evidence"
         assert payload["recommended_action"]["type"] == "collect_more_info"
 
+    def test_declared_question_is_not_retrieved_as_an_incident(self):
+        payload = diagnose_json(
+            "--question",
+            "Can this repository support a configurable retry timeout?",
+            "--report-kind",
+            "question",
+        )
+
+        assert payload["report_assessment"] == {
+            "kind": "question",
+            "basis": "declared",
+            "retrieval_allowed": False,
+            "observed_evidence": [],
+            "rationale": "the caller marked this input as a question, not a failure report",
+        }
+        assert payload["stages"]["retrieved_candidates"] == 0
+        assert payload["incident"]["matched"] is False
+        assert payload["recommended_action"]["type"] == "abstain"
+
     def test_workspace_supplies_context_without_authorising_the_detected_package(
         self, tmp_path: Path
     ):
@@ -185,6 +204,40 @@ class TestPublicContract:
 
 
 class TestEvaluatorCases:
+    def test_anchor_narrows_identity_but_does_not_authorise_an_upgrade(self):
+        payload = diagnose_json(
+            "--error",
+            LOADER_ERROR,
+            "--version",
+            "0.1.2-alpha.1",
+            "--runtime",
+            "node 24.11.1",
+            "--anchor",
+            "structural:__DSH_BOOT__",
+        )
+
+        assert payload["incident"]["matched"] is True
+        assert payload["authorization"]["authorized"] is False
+        assert payload["authorization"]["requires_confirmation"] is True
+        assert payload["recommended_action"]["type"] == "collect_more_info"
+        assert payload["understood"]["identity_anchors"] == [
+            {"kind": "structural", "value": "__dsh_boot__"}
+        ]
+
+    def test_mismatching_anchor_rejects_a_candidate_before_a_proposal(self):
+        payload = diagnose_json(
+            "--error",
+            LOADER_ERROR,
+            "--version",
+            "0.1.2-alpha.1",
+            "--anchor",
+            "structural:not_a_real_boot_marker",
+        )
+
+        assert payload["incident"]["matched"] is False
+        assert payload["stages"]["rejected_candidates"].get("structured_anchor_mismatch", 0) >= 1
+        assert payload["recommended_action"]["type"] == "abstain"
+
     def test_old_release_recommends_the_first_containing_release(self):
         payload = diagnose_json(
             "--error",

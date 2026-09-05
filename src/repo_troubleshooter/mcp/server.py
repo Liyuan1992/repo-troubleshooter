@@ -19,13 +19,18 @@ Safety properties this file must keep:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
 from repo_troubleshooter.config import get_settings
-from repo_troubleshooter.diagnosis.contract import DiagnosisRequest, PluginSpec
+from repo_troubleshooter.diagnosis.contract import (
+    DiagnosisRequest,
+    PluginSpec,
+    ReportKind,
+    StructuredAnchor,
+)
 from repo_troubleshooter.diagnosis.engine import diagnose as run_diagnosis
 from repo_troubleshooter.evidence.packet import resolve as resolve_evidence
 from repo_troubleshooter.relations.signatures import SignaturesStale
@@ -101,12 +106,14 @@ def diagnose(
     repo: str,
     error: str | None = None,
     question: str | None = None,
+    report_kind: str = "unknown",
     core_version: str | None = None,
     runtime: str | None = None,
     os_name: str | None = None,
     plugins: list[dict[str, str | None]] | None = None,
     config_keys: list[str] | None = None,
     packages: list[str] | None = None,
+    anchors: list[dict[str, str]] | None = None,
     confirm: str | None = None,
 ) -> dict[str, Any]:
     """Diagnose one problem. `runtime` is free text such as "node 24.11.1"."""
@@ -118,12 +125,14 @@ def diagnose(
         repo=repo,
         error=error,
         question=question,
+        report_kind=cast(ReportKind, report_kind),  # validated by the shared request contract
         core_version=core_version,
         runtime=runtime,
         os=os_name,
         plugins=[PluginSpec.model_validate(item) for item in (plugins or [])],
         config_keys=list(config_keys or []),
         packages=list(packages or []),
+        identity_anchors=[StructuredAnchor.model_validate(item) for item in (anchors or [])],
         confirm=confirm,
     )
     try:
